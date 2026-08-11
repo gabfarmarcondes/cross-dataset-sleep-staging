@@ -216,3 +216,45 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+
+
+# Project-specific
+
+# Datasets
+data/
+*.edf
+*.rec
+*.hyp
+
+# Generated data arrays
+*.npz
+*.npy
+
+# Trained models / checkpoints
+*.pth
+*.pt
+*.ckpt
+*.h5
+
+# Experiment tracking
+mlruns/
+wandb/
+lightning_logs/
+
+# Results that can be regenerated
+results/
+outputs/
+
+# LaTeX build artifacts (if thesis text lives here)
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.lof
+*.lot
+*.out
+*.synctex.gz
+*.toc
+*.xdv
