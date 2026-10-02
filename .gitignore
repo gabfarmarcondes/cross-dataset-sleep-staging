@@ -222,10 +222,7 @@ __marimo__/
 # Project-specific
 
 # Datasets
-data/
-*.edf
-*.rec
-*.hyp
+datasets/
 
 # Generated data arrays
 *.npz
