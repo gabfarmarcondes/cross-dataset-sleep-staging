@@ -1,0 +1,108 @@
+# Subjects used in the prototype. Every later step (preprocessing, splits,
+# training) reads the subject lists from this file; do not hard-code IDs elsewhere.
+#
+# IDs are subjects, not recordings: a subject's recordings always go to the same
+# fold, so no subject appears in both train and test. src/read_data.py maps each
+# ID to its files (get_subject_files).
+#
+# Each `subdir` is relative to `data_root` in configs/paths.yaml.
+# `channel_names` lists the accepted names of the single EEG channel used, in
+# order of preference; the first one present in the recording is read.
+# Labels are mapped to the common scheme W=0, N1=1, N2=2, N3=3, REM=4.
+# Annotations not in a mapping are skipped.
+
+sleep_edf:
+  # Rule: first 20 subjects of the Sleep Cassette (SC) study (subject 00-19),
+  # the "Sleep-EDF-20" subset used by DeepSleepNet, TinySleepNet and AdaTime.
+  # Two nights per subject, except subject 13 (only night 1, SC4132 is not in the release).
+  # 39 recordings in total.
+  name: "Sleep-EDF Expanded (PhysioNet)"
+  subdir: "Sleep-EDF Expanded (PhysioNet)/sleep-cassette"
+  subjects: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+  expected_recordings: 39 # sanity check in the loader
+
+  files:
+    # One PSG file per recording: SC4<ss><night>E0-PSG.edf
+    signal_pattern: "SC4{subject:02d}?E0-PSG.edf"
+    # The hypnogram shares the first 7 characters with its PSG file
+    # (e.g. SC4001E0-PSG.edf -> SC4001EC-Hypnogram.edf); the 8th character
+    # identifies the scorer and varies, so match by prefix
+    annotation_pattern: "{prefix}?-Hypnogram.edf" # prefix = psg_name[:7]
+
+  channel_names: ["EEG Fpz-Cz"] # exact names in the EDF header
+  sampling_rate: 100
+
+  # Keep only 30 min of wake before the first and after the last sleep epoch
+  # (as in DeepSleepNet/TinySleepNet). The SC recordings last ~21-24 h; the
+  # other datasets are already limited to the sleep period.
+  trim_wake_minutes: 30
+
+  labels:
+    # R&K annotations -> common AASM scheme: W=0, N1=1, N2=2, N3=3, REM=4.
+    # Stages 3 and 4 are merged into N3.
+    # null = epoch discarded (movement time and unscored)
+    mapping:
+      "Sleep stage W": 0
+      "Sleep stage 1": 1
+      "Sleep stage 2": 2
+      "Sleep stage 3": 3
+      "Sleep stage 4": 3
+      "Sleep stage R": 4
+      "Movement time": null
+      "Sleep stage ?": null
+
+isruc:
+  # Rule: subjects 1-20 of Subgroup I (patients with sleep disorders,
+  # one recording per subject): 20 recordings in total.
+  # Each subject folder has the signals (.rec), one hypnogram per expert
+  # (_1.txt, _2.txt) and spreadsheets with extra scoring details.
+  # Only the .rec and the expert-1 hypnogram are read. The loader opens these
+  # two paths directly and never lists or globs the folder; the other files
+  # are ignored on purpose.
+  name: "ISRUC-SLEEP Dataset"
+  subdir: "ISRUC-SLEEP Dataset/data"
+  subjects: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+  expected_recordings: 20
+
+  files:
+    signal: "{subject}/{subject}.rec" # EDF content with a .rec extension
+    annotation: "{subject}/{subject}_1.txt" # expert 1, one label per line
+
+  # Subjects 11, 13, 14, 17, 19 and 20 use the M1/M2 naming for the same mastoid reference
+  channel_names: ["C3-A2", "C3-M2"]
+  sampling_rate: 200
+
+  labels:
+    # ISRUC codes (already AASM) -> common scheme: W=0, N1=1, N2=2, N3=3, REM=4.
+    # ISRUC uses 5 for REM, code 4 does not occur.
+    mapping:
+      0: 0
+      1: 1
+      2: 2
+      3: 3
+      5: 4
+
+hmc:
+  # Rule: first 20 recordings available in release 1.1 (one recording per patient).
+  # SN014 is not in this release, so the list skips it.
+  name: "HMC (Haaglanden Medisch Centrum sleep staging database)"
+  subdir: "HMC (Haaglanden Medisch Centrum sleep staging database)/recordings"
+  subjects: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 15, 16, 17, 18, 19, 20, 21]
+  expected_recordings: 20
+
+  files:
+    signal: "SN{subject:03d}.edf"
+    annotation: "SN{subject:03d}_sleepscoring.edf" # EDF+. The .txt copy is not used
+
+  channel_names: ["EEG C3-M2"]
+  sampling_rate: 256
+
+  labels:
+    # AASM annotations -> common scheme: W=0, N1=1, N2=2, N3=3, REM=4.
+    # Other annotations (e.g. "Lights off") are not epoch labels and are skipped.
+    mapping:
+      "Sleep stage W": 0
+      "Sleep stage N1": 1
+      "Sleep stage N2": 2
+      "Sleep stage N3": 3
+      "Sleep stage R": 4

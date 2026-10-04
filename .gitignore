@@ -224,6 +224,9 @@ __marimo__/
 # Datasets
 datasets/
 
+# Machine-specific paths (copy configs/paths.example.yaml)
+configs/paths.yaml
+
 # Generated data arrays
 *.npz
 *.npy
