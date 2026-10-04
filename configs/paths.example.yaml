@@ -1,0 +1,10 @@
+# Machine-specific paths. Copy this file to configs/paths.yaml (not versioned)
+# and edit it for your machine.
+#
+# data_root is the folder that contains each dataset's top folder, e.g.
+#   <data_root>/Sleep-EDF Expanded (PhysioNet)/
+#   <data_root>/ISRUC-SLEEP Dataset/
+#   <data_root>/HMC (Haaglanden Medisch Centrum sleep staging database)/
+# The `subdir` of each dataset in configs/datasets.yaml is relative to it.
+# Use an absolute path, or a path relative to the repository root.
+data_root: "/path/to/datasets"
