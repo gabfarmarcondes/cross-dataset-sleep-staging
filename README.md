@@ -75,6 +75,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
+> If you do not have an NVIDIA GPU, see the requirements.txt
 
 ## Data setup
 
