@@ -8,3 +8,4 @@
 # The `subdir` of each dataset in configs/datasets.yaml is relative to it.
 # Use an absolute path, or a path relative to the repository root.
 data_root: "/path/to/datasets"
+processed_root: "/path/to/datasets/npz_data"
