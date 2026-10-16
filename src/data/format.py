@@ -11,6 +11,7 @@ import numpy as np
 FS = 100                         # sampling rate after resampling (Hz)
 EPOCH_SAMPLES = 30 * FS          # one 30-s epoch = 3000 samples
 N_CLASSES = 5                    # 0=W, 1=N1, 2=N2, 3=N3, 4=REM
+STAGES = ("W", "N1", "N2", "N3", "REM")  # stage name of each label
 DATASETS = {"sleep_edf", "isruc", "hmc"}
 
 ARRAY_KEYS = {"x", "y", "epoch_idx"}

@@ -59,6 +59,11 @@ def get_subject_files(dataset, sid):
         raise FileNotFoundError(f"{dataset} subject {sid}: missing files {missing or 'all'}")
     return pairs
 
+def processed_path(dataset, recording_id):
+    """Path of the .npz file of one preprocessed recording."""
+    _, paths = load_config()
+    return ROOT / paths["processed_root"] / dataset / f"{recording_id}.npz"
+
 
 def validate_dataset(dataset):
     """Resolve the files of every subject and check the recording count.
