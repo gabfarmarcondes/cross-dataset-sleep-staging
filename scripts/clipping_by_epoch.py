@@ -7,7 +7,7 @@ import sys
 import mne
 import numpy as np
 
-from scripts.inspect_isruc_headers import channel_header
+from src.data.edf_header import channel_header
 from src.data.format import STAGES
 from src.read_data import as_edf, get_subject_files, load_config, pick_channel, read_isruc_labels
 
