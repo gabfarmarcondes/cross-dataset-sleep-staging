@@ -258,3 +258,6 @@ outputs/
 *.synctex.gz
 *.toc
 *.xdv
+
+# Personal notes about the project
+notes/
