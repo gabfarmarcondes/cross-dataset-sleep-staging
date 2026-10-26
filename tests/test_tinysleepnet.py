@@ -1,7 +1,10 @@
-"""Unit tests for the TinySleepNet CNN (issue 10). Run from the repository root:
+"""Unit tests for TinySleepNet: CNN (issue 10) and sequence part (issue 11).
+Run from the repository root:
 
     python -m pytest tests/
 """
+import math
+
 import pytest
 import torch
 from torch import nn
@@ -10,7 +13,9 @@ from src.models.tinysleepnet import (
     N_FEATURES,
     EpochClassifier,
     SameMaxPool1d,
+    TinySleepNet,
     TinySleepNetCNN,
+    count_parameters,
     same_padding,
 )
 
@@ -77,3 +82,81 @@ def test_parameter_count():
     """4 convolutions (1*50 + 3 * 128*8 inputs per filter) and 4 batch norms (scale, shift)."""
     n = sum(p.numel() for p in TinySleepNetCNN().parameters())
     assert n == 128 * 50 + 3 * 128 * 128 * 8 + 4 * 2 * 128 == 400_640
+
+
+# --- sequence part (issue 11) --------------------------------------------------------------
+
+def test_sequence_output_shapes():
+    model = TinySleepNet().eval()
+    logits, (h, c) = model(torch.randn(2, 20, 3000), [20, 20])
+    assert logits.shape == (2, 20, 5)
+    assert h.shape == c.shape == (1, 2, 128)
+
+
+def test_carried_state_equals_one_long_sequence():
+    """Two minibatches of 20 epochs with the state carried = one pass over the 40 epochs."""
+    torch.manual_seed(0)
+    model = TinySleepNet().eval()
+    x = torch.randn(1, 40, 3000)
+    with torch.no_grad():
+        whole, _ = model(x, [40])
+        first, state = model(x[:, :20], [20])
+        second, _ = model(x[:, 20:], [20], state)
+    assert torch.allclose(torch.cat([first, second], dim=1), whole, atol=1e-5)
+
+
+def test_reset_starts_from_zeros():
+    model = TinySleepNet().eval()
+    x = torch.randn(1, 20, 3000)
+    zeros = (torch.zeros(1, 1, 128), torch.zeros(1, 1, 128))
+    ones = (torch.ones(1, 1, 128), torch.ones(1, 1, 128))
+    with torch.no_grad():
+        fresh, _ = model(x, [20])
+        assert torch.equal(fresh, model(x, [20], zeros)[0])
+        assert not torch.allclose(fresh, model(x, [20], ones)[0])
+
+
+def test_empty_row_keeps_its_state():
+    """A row whose recording has ended (length 0) passes its state through unchanged."""
+    model = TinySleepNet().eval()
+    state = (torch.randn(1, 2, 128), torch.randn(1, 2, 128))
+    with torch.no_grad():
+        _, (h, c) = model(torch.randn(2, 20, 3000), [20, 0], state)
+    assert torch.equal(h[:, 1], state[0][:, 1]) and torch.equal(c[:, 1], state[1][:, 1])
+    assert not torch.equal(h[:, 0], state[0][:, 0])
+
+
+def test_padding_is_ignored_even_by_batch_norm():
+    """What comes after a row's length changes nothing, also in training mode."""
+    torch.manual_seed(0)
+    model = TinySleepNet(dropout=0.0).train()  # batch statistics, no randomness
+    x = torch.randn(2, 20, 3000)
+    noisy = x.clone()
+    noisy[1, 7:] = 100 * torch.randn(13, 3000)
+    out_a, (h_a, _) = model(x, [20, 7])
+    out_b, (h_b, _) = model(noisy, [20, 7])
+    assert torch.allclose(out_a[0], out_b[0], atol=1e-5)
+    assert torch.allclose(out_a[1, :7], out_b[1, :7], atol=1e-5)
+    assert torch.allclose(h_a, h_b, atol=1e-5)
+
+
+def test_state_is_detached():
+    _, (h, c) = TinySleepNet()(torch.randn(1, 20, 3000), [20])
+    assert not h.requires_grad and not c.requires_grad
+
+
+def test_lstm_init_matches_tensorflow_defaults():
+    lstm = TinySleepNet().lstm
+    limit = math.sqrt(6 / ((2048 + 128) + 4 * 128))  # Glorot limit of the joint TF kernel
+    assert lstm.weight_ih_l0.abs().max() <= limit and lstm.weight_hh_l0.abs().max() <= limit
+    forget = slice(128, 256)  # PyTorch gate order: input, forget, cell, output
+    assert torch.all(lstm.bias_ih_l0[forget] == 1)
+    assert torch.all(lstm.bias_ih_l0[:128] == 0) and torch.all(lstm.bias_ih_l0[256:] == 0)
+    assert torch.all(lstm.bias_hh_l0 == 0)
+
+
+def test_sequence_parameter_count():
+    """Official TF config: 1,516,293. Here: no peepholes (-3 x 128), two biases (+4 x 128)."""
+    model = TinySleepNet()
+    assert count_parameters(model.lstm) == 4 * 128 * (2048 + 128) + 2 * 4 * 128 == 1_115_136
+    assert count_parameters(model) == 400_640 + 1_115_136 + (128 * 5 + 5) == 1_516_293 + 128
