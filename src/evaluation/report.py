@@ -5,14 +5,23 @@
         --group "ISRUC=isruc:in_domain" \\
         --group "HMC=hmc:in_domain"
 
-A group is LABEL=DATASET:SCENARIO[:TARGET]:
-    in_domain       runs of DATASET trained with --fold (all folds and seeds), each tested on
-                    its fold's test subjects; one value per run
-    cross:TARGET    runs of DATASET trained with --source, tested on TARGET's target.test
-                    subjects; one value per run (seed)
-    in_domain_ref   the in-domain runs of DATASET again, but only on DATASET's target.test
-                    subjects, pooled over the folds of each seed: the in-domain reference for
-                    the cross-dataset scenarios whose target is DATASET; one value per seed
+A group is LABEL=DATASET:SCENARIO[:TARGET][@MODE]:
+    in_domain         runs of DATASET trained with --fold (all folds and seeds), each tested
+                      on its fold's test subjects; one value per run
+    in_domain_pooled  the same runs, with the test epochs of the folds of each seed pooled
+                      before computing the metrics, as the official TinySleepNet code does
+                      (predict.py); one value per seed
+    in_domain_ref     the same runs, pooled per seed, but only on DATASET's target.test
+                      subjects: the in-domain reference for the cross-dataset scenarios whose
+                      target is DATASET; one value per seed
+    cross:TARGET      runs of DATASET trained with --source, tested on TARGET's target.test
+                      subjects; one value per run (seed)
+@MODE (epoch or sequence) overrides --mode for that group, so that, e.g., CNN-only and
+CNN + LSTM can be rows of the same table:
+
+    python -m src.evaluation.report --name experiment_a \
+        --group "CNN=sleep_edf:in_domain_pooled@epoch" \
+        --group "CNN + LSTM=sleep_edf:in_domain_pooled@sequence"
 
 Only runs with the chosen mode, batch norm and filter setting are used (--mode, --batch-norm,
 --filter; defaults from configs/experiment.yaml). Runs not yet evaluated are evaluated first
@@ -23,7 +32,7 @@ Writes in outputs/results/:
     <name>.csv             one row per group (fractions, not percentages)
     <name>_metrics.tex     accuracy, macro-F1 and kappa         (tabular, for \\input{} in the thesis)
     <name>_f1_stages.tex   F1 per stage
-    <name>_cost.tex        parameters, training and inference time
+    <name>_cost.tex        parameters, training and inference time (over the runs behind each group)
 """
 import argparse
 import csv
@@ -44,7 +53,7 @@ from src.training.loop import MODES
 from src.training.train import EXPERIMENT_FILE, RUNS_DIR
 
 RESULTS_DIR = ROOT / "outputs" / "results"
-SCENARIOS = ("in_domain", "cross", "in_domain_ref")
+SCENARIOS = ("in_domain", "in_domain_pooled", "in_domain_ref", "cross")
 METRICS = ["accuracy", "macro_f1", "kappa"] + [f"f1_{s}" for s in STAGES]
 COSTS = ["parameters", "seconds_per_training_epoch", "epochs_run", "inference_seconds_per_recording"]
 
@@ -52,18 +61,19 @@ COSTS = ["parameters", "seconds_per_training_epoch", "epochs_run", "inference_se
 # ----------------------------------------------------------------------------- groups and runs
 
 def parse_group(spec):
-    """'LABEL=DATASET:SCENARIO[:TARGET]' -> dict."""
+    """'LABEL=DATASET:SCENARIO[:TARGET][@MODE]' -> dict (mode None: use --mode)."""
     label, sep, rest = spec.partition("=")
+    rest, _, mode = rest.partition("@")
     parts = rest.split(":")
-    if not sep or len(parts) not in (2, 3) or parts[1] not in SCENARIOS:
-        raise ValueError(f"group {spec!r}: expected LABEL=DATASET:SCENARIO[:TARGET], "
-                         f"SCENARIO in {SCENARIOS}")
+    if not sep or len(parts) not in (2, 3) or parts[1] not in SCENARIOS or (mode and mode not in MODES):
+        raise ValueError(f"group {spec!r}: expected LABEL=DATASET:SCENARIO[:TARGET][@MODE], "
+                         f"SCENARIO in {SCENARIOS}, MODE in {MODES}")
     dataset, scenario = parts[0], parts[1]
     target = parts[2] if len(parts) == 3 else None
     if (scenario == "cross") != (target is not None):
         raise ValueError(f"group {spec!r}: a target goes with the cross scenario, and only with it")
     return {"label": label.strip(), "spec": spec, "dataset": dataset, "scenario": scenario,
-            "target": target}
+            "target": target, "mode": mode or None}
 
 
 def find_runs(dataset, scenario, mode, batch_norm, filtered, runs_dir=RUNS_DIR):
@@ -99,47 +109,55 @@ def read_predictions(run_dir):
         return [(int(r["subject_id"]), int(r["y_true"]), int(r["y_pred"])) for r in csv.DictReader(f)]
 
 
+def cost_of(result):
+    return {k: result["cost"][k] for k in COSTS} if "cost" in result else None
+
+
 def collect(group, runs, force, log):
-    """Per-value metrics (and costs) of one group."""
-    entries = []
+    """(entries, costs) of one group: the metric values, and the cost of every run used."""
+    entries, costs = [], []
     if group["scenario"] in ("in_domain", "cross"):
         for run_dir, info in runs:
             result = evaluation_of(run_dir, group["target"], force, log)
             entries.append({"name": info["run"], "seed": info["seed"],
                             "fold": info["split"].get("fold"),
                             "values": values_of(result["metrics"]),
-                            "confusion": result["metrics"]["confusion"],
-                            "cost": {k: result["cost"][k] for k in COSTS}})
-        return entries
+                            "confusion": result["metrics"]["confusion"]})
+            costs.append(cost_of(result))
+        return entries, [c for c in costs if c]
 
-    # in_domain_ref: pool the folds of each seed, keep only the target.test subjects
-    target_test = set(load_splits(group["dataset"])["cross_dataset"]["target"]["test"])
+    # pooled scenarios: the test epochs of the k folds of each seed together; in_domain_ref
+    # keeps only the target.test subjects
+    splits = load_splits(group["dataset"])
+    if group["scenario"] == "in_domain_ref":
+        keep = set(splits["cross_dataset"]["target"]["test"])
+    else:
+        keep = {int(s) for s in splits["recordings"]}
     by_seed = defaultdict(dict)
     for run_dir, info in runs:
         by_seed[info["seed"]][info["split"]["fold"]] = run_dir
-    k = load_splits(group["dataset"])["in_domain"]["k"]
+    k = splits["in_domain"]["k"]
     for seed, folds in sorted(by_seed.items()):
         if len(folds) < k:
             log(f"  {group['label']}: seed {seed} has {len(folds)} of {k} folds, skipped")
             continue
         rows = []
         for fold in sorted(folds):
-            evaluation_of(folds[fold], None, force, log)
-            rows += [r for r in read_predictions(folds[fold]) if r[0] in target_test]
-        missing = target_test - {r[0] for r in rows}
+            costs.append(cost_of(evaluation_of(folds[fold], None, force, log)))
+            rows += [r for r in read_predictions(folds[fold]) if r[0] in keep]
+        missing = keep - {r[0] for r in rows}
         if missing:
             raise ValueError(f"{group['label']}: seed {seed} has no predictions for subjects {sorted(missing)}")
         metrics = compute_metrics([r[1] for r in rows], [r[2] for r in rows])
         entries.append({"name": f"seed {seed} (folds pooled)", "seed": seed, "fold": None,
-                        "values": values_of(metrics), "confusion": metrics["confusion"],
-                        "cost": None})
-    return entries
+                        "values": values_of(metrics), "confusion": metrics["confusion"]})
+    return entries, [c for c in costs if c]
 
 
-def summarize_group(entries):
+def summarize_group(entries, costs):
+    """Metrics over the entries; costs over the runs (in pooled groups, one per fold run)."""
     summary = {m: summarize([e["values"][m] for e in entries]) for m in METRICS}
-    with_cost = [e for e in entries if e["cost"]]
-    summary.update({c: summarize([e["cost"][c] for e in with_cost]) for c in COSTS})
+    summary.update({c: summarize([cost[c] for cost in costs]) for c in COSTS})
     confusion = np.sum([e["confusion"] for e in entries], axis=0) if entries else np.zeros((5, 5))
     return summary, np.asarray(confusion, dtype=int)
 
@@ -188,7 +206,7 @@ def latex_tables(groups):
           mean_std(g["summary"]["seconds_per_training_epoch"], 1, 0),
           mean_std(g["summary"]["epochs_run"], 1, 0),
           mean_std(g["summary"]["inference_seconds_per_recording"], 1, 2)]
-         for g in groups if g["scenario"] != "in_domain_ref"],
+         for g in groups],
         "lrrrr")
     return metrics, stages, cost
 
@@ -217,14 +235,16 @@ def main():
     groups = []
     for spec in args.group:
         group = parse_group(spec)
-        runs = find_runs(group["dataset"], group["scenario"], args.mode, args.batch_norm, filtered)
+        group["mode"] = group["mode"] or args.mode
+        runs = find_runs(group["dataset"], group["scenario"], group["mode"], args.batch_norm, filtered)
         if not runs:
-            raise SystemExit(f"{group['label']}: no finished {args.mode} runs of {group['dataset']} "
-                             f"({group['scenario']}, {args.batch_norm} batch norm, filter {args.filter})")
+            raise SystemExit(f"{group['label']}: no finished {group['mode']} runs of {group['dataset']} "
+                             f"({group['scenario']}, {args.batch_norm} batch norm, filter {args.filter}) "
+                             f"in {RUNS_DIR}; train them first")
         print(f"{group['label']}: {len(runs)} runs")
-        entries = collect(group, runs, args.force, log=lambda message: print("  " + message))
-        group["entries"] = entries
-        group["summary"], confusion = summarize_group(entries)
+        entries, costs = collect(group, runs, args.force, log=lambda message: print("  " + message))
+        group["entries"], group["costs"] = entries, costs
+        group["summary"], confusion = summarize_group(entries, costs)
         group["confusion_sum"] = confusion.tolist()
         group["confusion_normalized"] = normalize_rows(confusion).tolist()
         groups.append(group)
@@ -238,11 +258,11 @@ def main():
     with open(RESULTS_DIR / f"{args.name}.csv", "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         keys = METRICS + COSTS
-        writer.writerow(["label", "dataset", "scenario", "target", "n"]
+        writer.writerow(["label", "dataset", "scenario", "target", "mode", "n"]
                         + [f"{k}_{s}" for k in keys for s in ("mean", "std")])
         for g in groups:
             s = g["summary"]
-            writer.writerow([g["label"], g["dataset"], g["scenario"], g["target"] or "",
+            writer.writerow([g["label"], g["dataset"], g["scenario"], g["target"] or "", g["mode"],
                              s["macro_f1"]["n"]]
                             + [f"{s[k][stat]:.4f}" for k in keys for stat in ("mean", "std")])
     for suffix, text in zip(("metrics", "f1_stages", "cost"), latex_tables(groups)):
