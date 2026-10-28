@@ -1,5 +1,23 @@
+model:
+  batch_norm: official    # official: learned scale and shift only, as the official code runs (D27)
+                          # standard: torch BatchNorm1d (batch statistics in training)
+
 preprocessing:
   filter: true          # band-pass 0.3-35 Hz on/off (D7)
   band: [0.3, 35.0]
   filter_order: 4
   clip: 20.0            # robust scaling, clip at +-20 IQR (D8)
+
+training:
+  mode: sequence          # sequence (CNN + LSTM) or epoch (CNN + linear head)
+  max_epochs: 200
+  patience: 50            # stop after this many epochs without a better validation macro-F1
+  learning_rate: 1.0e-4   # write floats with a dot: PyYAML reads 1e-4 as a string
+  betas: [0.9, 0.999]
+  adam_eps: 1.0e-8
+  l2_weight_decay: 1.0e-3 # on the 4 convolution kernels only, as in the official code
+  clip_grad_norm: 5.0
+  class_weights: [1.0, 1.5, 1.0, 1.0, 1.0]  # W, N1, N2, N3, REM
+  batch_size: 15          # sequence mode: recordings in parallel
+  seq_length: 20          # sequence mode: epochs per minibatch
+  epoch_batch_size: 100   # epoch mode: epochs per minibatch

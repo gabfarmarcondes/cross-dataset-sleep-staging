@@ -14,19 +14,30 @@ CNN: one 30-s epoch at 100 Hz, [batch, 1, 3000] -> a feature vector [batch, 2048
     3 x [Conv(128, 8, stride 1) -> BN -> ReLU]
     MaxPool(4, 4) -> Flatten -> Dropout(0.5)
 
+BN is chosen with batch_norm (configs/experiment.yaml, model block; D27):
+    "official"  what the official layers actually compute: a learned scale and shift per
+                channel, with no batch statistics (default)
+    "standard"  torch BatchNorm1d: batch statistics in training, running averages in
+                evaluation
+
 Sequence part: the CNN features of 20 consecutive epochs -> LSTM(128) -> Dropout(0.5)
 -> Linear(5), one prediction per epoch. The LSTM state is carried across consecutive
 minibatches of the same recordings (see src/training/minibatches.py).
 
 Kept from the official code: TensorFlow 'SAME' padding, convolutions without bias,
-batch-norm epsilon and momentum, the weight initialization (CNN, LSTM, output layer),
-the LSTM forget bias of 1, and dropout on the LSTM output.
+the effective batch-norm behavior (default), the weight initialization (CNN, LSTM,
+output layer), the LSTM forget bias of 1, and dropout on the LSTM output.
+
+About batch norm: the official nn.batch_norm receives is_training but never passes it
+on, so tf.layers.batch_normalization always runs in inference mode, with its running
+mean and variance stuck at their initial values (0 and 1). Each layer is therefore a
+learned scale and shift; this is what ScaleShift computes. Real batch normalization
+("standard") was the first choice here (D24), but in the sequence mode each minibatch
+holds consecutive epochs of a few recordings, so its batch statistics differ from the
+running averages used in evaluation: a model that memorized one recording scored 99% in
+training mode and 53-75% in evaluation mode on the same data (D27).
 
 Differences from the official code:
-- Batch normalization is real batch normalization: batch statistics in training,
-  running statistics in evaluation. The official nn.batch_norm receives is_training
-  but never passes it on, so its layers always run in inference mode with mean 0 and
-  variance 1 (a learned per-channel scale and shift).
 - PyTorch's LSTM has no peephole connections (the official LSTMCell uses them) and keeps
   two bias vectors per gate instead of one: 128 more parameters in total.
 - Flatten order is channel-major ([128, 16]); TensorFlow flattens time-major
@@ -44,6 +55,8 @@ N_FILTERS = 128
 N_FEATURES = 16 * N_FILTERS  # for a 3000-sample input
 N_CLASSES = 5
 N_HIDDEN = 128  # LSTM units
+
+BATCH_NORMS = ("official", "standard")
 
 # tf.layers.batch_normalization(momentum=0.99, epsilon=0.001): TensorFlow keeps 99% of the
 # old running average, PyTorch's momentum is the weight of the new batch (1 - 0.99)
@@ -113,10 +126,36 @@ def tf_lstm_init_(lstm):
         lstm.bias_ih_l0[hidden:2 * hidden] = 1.0
 
 
-def conv_bn_relu(in_channels, kernel_size, stride):
+class ScaleShift(nn.Module):
+    """What the official batch-norm layers compute: a learned scale and shift per channel.
+
+    tf.layers.batch_normalization in inference mode with its initial statistics (mean 0,
+    variance 1) gives gamma * x / sqrt(1 + eps) + beta. The output of an epoch depends only
+    on that epoch, never on the rest of the batch, so training and evaluation compute the
+    same function.
+    """
+
+    def __init__(self, n_channels):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(n_channels))  # gamma (scale)
+        self.bias = nn.Parameter(torch.zeros(n_channels))  # beta (shift)
+
+    def forward(self, x):  # [batch, channels, time]
+        return x * (self.weight / math.sqrt(1 + BN_EPS))[:, None] + self.bias[:, None]
+
+
+def norm_layer(batch_norm):
+    if batch_norm == "official":
+        return ScaleShift(N_FILTERS)
+    if batch_norm == "standard":
+        return nn.BatchNorm1d(N_FILTERS, eps=BN_EPS, momentum=BN_MOMENTUM)
+    raise ValueError(f"batch_norm must be one of {BATCH_NORMS}, got {batch_norm!r}")
+
+
+def conv_bn_relu(in_channels, kernel_size, stride, batch_norm):
     return [
         SameConv1d(in_channels, N_FILTERS, kernel_size, stride, bias=False),
-        nn.BatchNorm1d(N_FILTERS, eps=BN_EPS, momentum=BN_MOMENTUM),
+        norm_layer(batch_norm),
         nn.ReLU(),
     ]
 
@@ -124,16 +163,16 @@ def conv_bn_relu(in_channels, kernel_size, stride):
 class TinySleepNetCNN(nn.Module):
     """Feature extractor: [batch, 1, 3000] -> [batch, 2048]."""
 
-    def __init__(self, dropout=0.5):
+    def __init__(self, dropout=0.5, batch_norm="official"):
         super().__init__()
         self.layers = nn.Sequential(
             # kernel 50 and stride 6 are fs / 2 and fs / 16 at 100 Hz, as in the official code
-            *conv_bn_relu(1, kernel_size=50, stride=6),
+            *conv_bn_relu(1, kernel_size=50, stride=6, batch_norm=batch_norm),
             SameMaxPool1d(8, 8),
             nn.Dropout(dropout),
-            *conv_bn_relu(N_FILTERS, kernel_size=8, stride=1),
-            *conv_bn_relu(N_FILTERS, kernel_size=8, stride=1),
-            *conv_bn_relu(N_FILTERS, kernel_size=8, stride=1),
+            *conv_bn_relu(N_FILTERS, kernel_size=8, stride=1, batch_norm=batch_norm),
+            *conv_bn_relu(N_FILTERS, kernel_size=8, stride=1, batch_norm=batch_norm),
+            *conv_bn_relu(N_FILTERS, kernel_size=8, stride=1, batch_norm=batch_norm),
             SameMaxPool1d(4, 4),
             nn.Flatten(),
             nn.Dropout(dropout),
@@ -154,9 +193,9 @@ class EpochClassifier(nn.Module):
     Returns logits [batch, n_classes]; softmax is left to the loss.
     """
 
-    def __init__(self, n_classes=N_CLASSES, dropout=0.5):
+    def __init__(self, n_classes=N_CLASSES, dropout=0.5, batch_norm="official"):
         super().__init__()
-        self.cnn = TinySleepNetCNN(dropout)
+        self.cnn = TinySleepNetCNN(dropout, batch_norm)
         self.head = nn.Linear(N_FEATURES, n_classes)
         lecun_normal_(self.head.weight)  # official "softmax_linear": same init, bias 0
         nn.init.zeros_(self.head.bias)
@@ -180,9 +219,10 @@ class TinySleepNet(nn.Module):
     as in the official code, where the state is fed back as plain numbers.
     """
 
-    def __init__(self, n_classes=N_CLASSES, hidden_size=N_HIDDEN, dropout=0.5):
+    def __init__(self, n_classes=N_CLASSES, hidden_size=N_HIDDEN, dropout=0.5,
+                 batch_norm="official"):
         super().__init__()
-        self.cnn = TinySleepNetCNN(dropout)
+        self.cnn = TinySleepNetCNN(dropout, batch_norm)
         self.lstm = nn.LSTM(N_FEATURES, hidden_size, batch_first=True)
         self.dropout = nn.Dropout(dropout)  # official DropoutWrapper(output_keep_prob=0.5)
         self.head = nn.Linear(hidden_size, n_classes)
@@ -195,7 +235,8 @@ class TinySleepNet(nn.Module):
         lengths = torch.as_tensor(lengths, dtype=torch.int64).cpu()  # packing wants CPU lengths
         real = (torch.arange(seq_length) < lengths[:, None]).to(x.device)  # [batch, seq_length]
 
-        # Only real epochs go through the CNN: padding zeros would enter the batch statistics
+        # Only real epochs go through the CNN: it saves work, and with standard batch norm
+        # the padding zeros would enter the batch statistics
         features = x.new_zeros(batch, seq_length, N_FEATURES)
         features[real] = self.cnn(x[real].unsqueeze(1))
 

@@ -10,9 +10,11 @@ import torch
 from torch import nn
 
 from src.models.tinysleepnet import (
+    BN_EPS,
     N_FEATURES,
     EpochClassifier,
     SameMaxPool1d,
+    ScaleShift,
     TinySleepNet,
     TinySleepNetCNN,
     count_parameters,
@@ -126,10 +128,11 @@ def test_empty_row_keeps_its_state():
     assert not torch.equal(h[:, 0], state[0][:, 0])
 
 
-def test_padding_is_ignored_even_by_batch_norm():
+@pytest.mark.parametrize("batch_norm", ["official", "standard"])
+def test_padding_is_ignored_even_by_batch_norm(batch_norm):
     """What comes after a row's length changes nothing, also in training mode."""
     torch.manual_seed(0)
-    model = TinySleepNet(dropout=0.0).train()  # batch statistics, no randomness
+    model = TinySleepNet(dropout=0.0, batch_norm=batch_norm).train()  # no randomness
     x = torch.randn(2, 20, 3000)
     noisy = x.clone()
     noisy[1, 7:] = 100 * torch.randn(13, 3000)
@@ -160,3 +163,41 @@ def test_sequence_parameter_count():
     model = TinySleepNet()
     assert count_parameters(model.lstm) == 4 * 128 * (2048 + 128) + 2 * 4 * 128 == 1_115_136
     assert count_parameters(model) == 400_640 + 1_115_136 + (128 * 5 + 5) == 1_516_293 + 128
+
+# --- batch norm: official scale and shift vs. standard (D27) --------------------------------
+
+def test_official_batch_norm_is_a_scale_and_shift():
+    """gamma * x / sqrt(1 + eps) + beta, with no running statistics to update."""
+    layer = ScaleShift(3)
+    with torch.no_grad():
+        layer.weight.copy_(torch.tensor([1.0, 2.0, -1.0]))
+        layer.bias.copy_(torch.tensor([0.0, 0.5, 1.0]))
+    x = torch.randn(4, 3, 10)
+    expected = x * torch.tensor([1.0, 2.0, -1.0])[:, None] / math.sqrt(1 + BN_EPS)
+    expected += torch.tensor([0.0, 0.5, 1.0])[:, None]
+    assert torch.allclose(layer(x), expected)
+    assert list(layer.buffers()) == []
+
+
+def test_default_cnn_uses_the_official_batch_norm():
+    cnn = TinySleepNetCNN()
+    assert sum(isinstance(m, ScaleShift) for m in cnn.modules()) == 4
+    assert not any(isinstance(m, nn.BatchNorm1d) for m in cnn.modules())
+    standard = TinySleepNetCNN(batch_norm="standard")
+    norms = [m for m in standard.modules() if isinstance(m, nn.BatchNorm1d)]
+    assert len(norms) == 4 and all(n.eps == BN_EPS and n.momentum == 0.01 for n in norms)
+    with pytest.raises(ValueError):
+        TinySleepNetCNN(batch_norm="group")
+
+
+@pytest.mark.parametrize("batch_norm, independent", [("official", True), ("standard", False)])
+def test_an_epoch_does_not_depend_on_its_batch(epochs, batch_norm, independent):
+    """With the official layer, an epoch gives the same features alone or with others,
+    in training mode and in evaluation mode. Standard batch norm does not (D27)."""
+    cnn = TinySleepNetCNN(dropout=0.0, batch_norm=batch_norm).train()
+    with torch.no_grad():
+        in_batch = cnn(epochs)[:1]
+        alone = cnn(epochs[:1].repeat(2, 1, 1))[:1]  # 2 copies: BatchNorm1d needs > 1 value
+        evaluated = cnn.eval()(epochs)[:1]
+    same = torch.allclose(in_batch, alone, atol=1e-5) and torch.allclose(in_batch, evaluated, atol=1e-5)
+    assert same == independent
