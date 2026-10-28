@@ -54,9 +54,11 @@ def test_portuguese_number_format():
 
 def test_groups_are_parsed_and_checked():
     g = parse_group("Sleep-EDF → ISRUC=sleep_edf:cross:isruc")
-    assert (g["label"], g["dataset"], g["scenario"], g["target"]) == \
-        ("Sleep-EDF → ISRUC", "sleep_edf", "cross", "isruc")
-    for bad in ["x=sleep_edf:cross", "x=sleep_edf:in_domain:isruc", "x=sleep_edf:test", "sleep_edf"]:
+    assert (g["label"], g["dataset"], g["scenario"], g["target"], g["mode"]) == \
+        ("Sleep-EDF → ISRUC", "sleep_edf", "cross", "isruc", None)
+    assert parse_group("CNN=sleep_edf:in_domain_pooled@epoch")["mode"] == "epoch"
+    for bad in ["x=sleep_edf:cross", "x=sleep_edf:in_domain:isruc", "x=sleep_edf:test", "sleep_edf",
+                "x=sleep_edf:in_domain@lstm"]:
         with pytest.raises(ValueError):
             parse_group(bad)
 
@@ -92,7 +94,7 @@ def test_predict_matches_one_pass_over_the_recording():
 
 # --- in-domain reference on the target.test subjects ----------------------------------------
 
-def test_in_domain_reference_pools_folds_on_target_test_subjects(tmp_path):
+def test_pooled_scenarios_pool_the_folds_of_each_seed(tmp_path):
     """Correct predictions only for target.test subjects: the reference must be 100%."""
     splits = load_splits("sleep_edf")
     target_test = set(splits["cross_dataset"]["target"]["test"])
@@ -112,9 +114,16 @@ def test_in_domain_reference_pools_folds_on_target_test_subjects(tmp_path):
         info = {"run": f"fold{fold}", "seed": 0, "split": {"fold": fold}}
         runs.append((run_dir, info))
     group = parse_group("ref=sleep_edf:in_domain_ref")
-    entries = collect(group, runs, force=False, log=lambda message: None)
+    entries, _ = collect(group, runs, force=False, log=lambda message: None)
     assert len(entries) == 1 and entries[0]["values"]["accuracy"] == 1.0
     assert sum(map(sum, entries[0]["confusion"])) == 10 * len(target_test)
 
-    skipped = collect(group, runs[:4], force=False, log=lambda message: None)  # a fold missing
+    skipped, _ = collect(group, runs[:4], force=False, log=lambda message: None)  # a fold missing
     assert skipped == []
+
+    # in_domain_pooled keeps every test subject: half of them (the others) are wrong
+    pooled, _ = collect(parse_group("all=sleep_edf:in_domain_pooled"), runs, force=False,
+                        log=lambda message: None)
+    n_subjects = len(splits["recordings"])
+    assert pooled[0]["values"]["accuracy"] == len(target_test) / n_subjects
+    assert sum(map(sum, pooled[0]["confusion"])) == 10 * n_subjects
