@@ -1,12 +1,12 @@
-"""Memorization check (issue 12; batch-norm decision, D27). From the repository root:
+"""Memorization check (issue 12; official vs. standard batch norm). From the repository root:
 
     python scripts/diagnose_overfit.py --mode sequence --batch-norm official
     python scripts/diagnose_overfit.py --mode sequence --batch-norm standard
     python scripts/diagnose_overfit.py --mode epoch --batch-norm official
 
-Trains a fresh model on one recording (SC4001) without dropout and without L2, with the
-other settings of experiment.yaml, until 99% training accuracy (at most 60 epochs). Then it
-evaluates the model on the same recording in evaluation mode.
+Trains a fresh model on one recording (SC4001) without dropout, L2 and data augmentation,
+with the other settings of experiment.yaml, until 99% training accuracy (at most 60
+epochs). Then it evaluates the model on the same recording in evaluation mode.
 
 - A correct loop memorizes the recording: training accuracy close to 100%.
 - If evaluation falls far below training on the same data, the model computes something
@@ -33,7 +33,8 @@ from torch import nn  # noqa: E402
 from src.data.splits import load_splits  # noqa: E402
 from src.models.tinysleepnet import BATCH_NORMS  # noqa: E402
 from src.read_data import ROOT  # noqa: E402
-from src.training.loop import MODES, make_model, make_optimizer, prepare, run_epoch  # noqa: E402
+from src.training.augment import without_augmentation  # noqa: E402
+from src.training.loop import MODES, make_model, make_optimizer, run_epoch  # noqa: E402
 from src.training.minibatches import PAD_LABEL, sequence_minibatches  # noqa: E402
 from src.training.train import load_recordings  # noqa: E402
 
@@ -86,12 +87,13 @@ def main():
 
     with open(ROOT / "configs" / "experiment.yaml", encoding="utf-8") as f:
         experiment = yaml.safe_load(f)
-    cfg = {**experiment["training"], "l2_weight_decay": 0.0}
+    cfg = {**without_augmentation(experiment["training"]), "l2_weight_decay": 0.0}
     splits = load_splits("sleep_edf")
     recording = load_recordings("sleep_edf", splits, [0], experiment["preprocessing"])[0]  # SC4001
-    data = prepare([recording], args.mode)
+    data = [recording]
 
-    print(f"memorization: SC4001, {args.mode} mode, {args.batch_norm} batch norm, no dropout, no L2")
+    print(f"memorization: SC4001, {args.mode} mode, {args.batch_norm} batch norm, "
+          f"no dropout, no L2, no augmentation")
     torch.manual_seed(0)
     model = make_model(args.mode, args.batch_norm)
     for module in model.modules():

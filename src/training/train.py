@@ -3,16 +3,18 @@
     python -m src.training.train --dataset sleep_edf --fold 0         # in-domain, fold 0
     python -m src.training.train --dataset sleep_edf --source         # dataset as source
     python -m src.training.train --dataset sleep_edf --subjects 0 1 --mode epoch   # overfit check
-    python -m src.training.train --dataset sleep_edf --fold 0 --batch-norm standard  # D27 comparison
+    python -m src.training.train --dataset sleep_edf --fold 0 --batch-norm standard  # batch-norm comparison
+    python -m src.training.train --dataset sleep_edf --fold 0 --no-augment   # issue 15 comparison
 
 Training and validation subjects come from the frozen splits (configs/splits). The test
 subjects (in_domain folds[i].test, cross_dataset target) are never loaded here, so model
-selection can only use source labels (D11). With --subjects, validation uses the same
+selection can only use source labels. With --subjects, validation uses the same
 subjects as training: it is a bug check (the model must be able to memorize them), not
 an experiment.
 
-Settings: the `model`, `training` and `preprocessing` blocks of configs/experiment.yaml.
-Output, in outputs/runs/<run name>/:
+Settings: the `model`, `training` and `preprocessing` blocks of configs/experiment.yaml;
+the training data are augmented as set there (signal_shift, sequence_skip; issue 15),
+unless --no-augment is given. Output, in outputs/runs/<run name>/:
     history.csv   one row per training epoch: loss, accuracy, macro-F1 (train and validation)
     best.pt       weights with the best validation macro-F1
     run.json      settings, subjects, recordings and result of the run
@@ -30,7 +32,8 @@ from src.data.dataset import SleepRecordings
 from src.data.splits import load_splits, recordings_of
 from src.models.tinysleepnet import BATCH_NORMS, count_parameters
 from src.read_data import ROOT, processed_path
-from src.training.loop import MODES, fit, make_model, prepare
+from src.training.augment import is_augmented, without_augmentation
+from src.training.loop import MODES, fit, make_model
 from src.training.seed import set_seed
 
 EXPERIMENT_FILE = ROOT / "configs" / "experiment.yaml"
@@ -53,8 +56,13 @@ def select_subjects(splits, fold=None, source=False, subjects=None):
     return part["train"], part["valid"]
 
 
+def same_training(a, b):
+    """Whether two `training` blocks are equal, apart from the mode (it is in the run name)."""
+    return {k: v for k, v in a.items() if k != "mode"} == {k: v for k, v in b.items() if k != "mode"}
+
+
 def run_name(dataset, mode, seed, fold=None, source=False, subjects=None, filtered=True,
-             batch_norm="official"):
+             batch_norm="official", augmented=True):
     """e.g. sleep_edf_fold0_sequence_seed0; suffixes mark the non-default settings."""
     if subjects:
         split = "subjects-" + "-".join(str(s) for s in subjects)
@@ -67,6 +75,8 @@ def run_name(dataset, mode, seed, fold=None, source=False, subjects=None, filter
         name += "_nofilter"
     if batch_norm != "official":
         name += f"_bn{batch_norm}"
+    if not augmented:
+        name += "_noaug"
     return name
 
 
@@ -86,6 +96,8 @@ def parse_args():
     parser.add_argument("--batch-norm", choices=BATCH_NORMS, default=None,
                         help="default: experiment.yaml")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--no-augment", action="store_true",
+                        help="train without data augmentation (signal_shift and sequence_skip at 0)")
     parser.add_argument("--max-epochs", type=int, default=None, help="override experiment.yaml")
     parser.add_argument("--overwrite", action="store_true", help="replace an existing run")
     return parser.parse_args()
@@ -98,14 +110,17 @@ def main():
     cfg, preprocessing = experiment["training"], experiment["preprocessing"]
     if args.max_epochs is not None:
         cfg["max_epochs"] = args.max_epochs
+    if args.no_augment:
+        cfg = without_augmentation(cfg)
     mode = args.mode or cfg["mode"]
     cfg["mode"] = mode  # run.json records the mode actually used
     model_cfg = experiment.get("model", {})
     batch_norm = args.batch_norm or model_cfg.get("batch_norm", "official")
     model_cfg["batch_norm"] = batch_norm
+    augmented = is_augmented(cfg, mode)
 
     name = run_name(args.dataset, mode, args.seed, args.fold, args.source, args.subjects,
-                    preprocessing["filter"], batch_norm)
+                    preprocessing["filter"], batch_norm, augmented)
     run_dir = RUNS_DIR / name
     if (run_dir / "history.csv").exists() and not args.overwrite:
         raise FileExistsError(f"{run_dir} already has a run; use --overwrite to replace it")
@@ -146,13 +161,16 @@ def main():
     run_json.write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")  # rewritten at the end
     n_train = sum(len(r["y"]) for r in train_recordings)
     n_valid = sum(len(r["y"]) for r in valid_recordings)
+    augmentation = (f"shift up to {cfg['signal_shift']:.0%} of an epoch"
+                    + (f", skip 0-{cfg['sequence_skip']} epochs" if mode == "sequence" else "")
+                    if augmented else "no augmentation")
     log.info(f"run {name} on {device}: {mode} mode, {batch_norm} batch norm, "
-             f"{info['parameters']:,} parameters")
+             f"{info['parameters']:,} parameters, {augmentation}")
     log.info(f"train subjects {train_subjects} ({len(train_recordings)} recordings, {n_train} epochs)")
     log.info(f"valid subjects {valid_subjects} ({len(valid_recordings)} recordings, {n_valid} epochs)")
 
-    result = fit(model, prepare(train_recordings, mode), prepare(valid_recordings, mode), mode,
-                 cfg, run_dir, args.seed, device, log=log.info)
+    result = fit(model, list(train_recordings), list(valid_recordings), mode, cfg, run_dir,
+                 args.seed, device, log=log.info)
     info["result"] = result
     info["finished"] = datetime.now().isoformat(timespec="seconds")
     run_json.write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")

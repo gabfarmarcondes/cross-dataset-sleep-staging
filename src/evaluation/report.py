@@ -5,7 +5,7 @@
         --group "ISRUC=isruc:in_domain" \\
         --group "HMC=hmc:in_domain"
 
-A group is LABEL=DATASET:SCENARIO[:TARGET][@MODE]:
+A group is LABEL=DATASET:SCENARIO[:TARGET][@OPTION[,OPTION]]:
     in_domain         runs of DATASET trained with --fold (all folds and seeds), each tested
                       on its fold's test subjects; one value per run
     in_domain_pooled  the same runs, with the test epochs of the folds of each seed pooled
@@ -16,15 +16,19 @@ A group is LABEL=DATASET:SCENARIO[:TARGET][@MODE]:
                       target is DATASET; one value per seed
     cross:TARGET      runs of DATASET trained with --source, tested on TARGET's target.test
                       subjects; one value per run (seed)
-@MODE (epoch or sequence) overrides --mode for that group, so that, e.g., CNN-only and
-CNN + LSTM can be rows of the same table:
+Options after @: a mode (epoch or sequence) overrides --mode for that group, and noaug
+takes the runs trained with --no-augment instead (issue 15). So CNN-only and CNN + LSTM, or
+with and without data augmentation, can be rows of the same table:
 
     python -m src.evaluation.report --name experiment_a \
         --group "CNN=sleep_edf:in_domain_pooled@epoch" \
-        --group "CNN + LSTM=sleep_edf:in_domain_pooled@sequence"
+        --group "CNN + LSTM=sleep_edf:in_domain_pooled@sequence" \
+        --group "CNN + LSTM, no augmentation=sleep_edf:in_domain_pooled@sequence,noaug"
 
-Only runs with the chosen mode, batch norm and filter setting are used (--mode, --batch-norm,
---filter; defaults from configs/experiment.yaml). Runs not yet evaluated are evaluated first
+Only runs with the chosen mode, batch norm and filter setting (--mode, --batch-norm,
+--filter; defaults from configs/experiment.yaml) and with the `training` block of
+experiment.yaml (augmentation off for noaug groups) are used: a quick test with
+--max-epochs never enters a table. Runs not yet evaluated are evaluated first
 (src/evaluation/evaluate.py). The tables show mean ± standard deviation over the values.
 
 Writes in outputs/results/:
@@ -49,8 +53,9 @@ from src.evaluation.evaluate import evaluate_run, file_suffix
 from src.evaluation.metrics import compute_metrics, normalize_rows, summarize
 from src.models.tinysleepnet import BATCH_NORMS
 from src.read_data import ROOT
+from src.training.augment import without_augmentation
 from src.training.loop import MODES
-from src.training.train import EXPERIMENT_FILE, RUNS_DIR
+from src.training.train import EXPERIMENT_FILE, RUNS_DIR, same_training
 
 RESULTS_DIR = ROOT / "outputs" / "results"
 SCENARIOS = ("in_domain", "in_domain_pooled", "in_domain_ref", "cross")
@@ -61,23 +66,29 @@ COSTS = ["parameters", "seconds_per_training_epoch", "epochs_run", "inference_se
 # ----------------------------------------------------------------------------- groups and runs
 
 def parse_group(spec):
-    """'LABEL=DATASET:SCENARIO[:TARGET][@MODE]' -> dict (mode None: use --mode)."""
+    """'LABEL=DATASET:SCENARIO[:TARGET][@OPTION[,OPTION]]' -> dict (mode None: use --mode)."""
     label, sep, rest = spec.partition("=")
-    rest, _, mode = rest.partition("@")
+    rest, _, options = rest.partition("@")
+    options = [o.strip() for o in options.split(",")] if options else []
+    modes = [o for o in options if o in MODES]
     parts = rest.split(":")
-    if not sep or len(parts) not in (2, 3) or parts[1] not in SCENARIOS or (mode and mode not in MODES):
-        raise ValueError(f"group {spec!r}: expected LABEL=DATASET:SCENARIO[:TARGET][@MODE], "
-                         f"SCENARIO in {SCENARIOS}, MODE in {MODES}")
+    if (not sep or len(parts) not in (2, 3) or parts[1] not in SCENARIOS or len(modes) > 1
+            or any(o not in MODES and o != "noaug" for o in options)):
+        raise ValueError(f"group {spec!r}: expected LABEL=DATASET:SCENARIO[:TARGET][@OPTION[,OPTION]], "
+                         f"SCENARIO in {SCENARIOS}, OPTION a mode in {MODES} or noaug")
     dataset, scenario = parts[0], parts[1]
     target = parts[2] if len(parts) == 3 else None
     if (scenario == "cross") != (target is not None):
         raise ValueError(f"group {spec!r}: a target goes with the cross scenario, and only with it")
     return {"label": label.strip(), "spec": spec, "dataset": dataset, "scenario": scenario,
-            "target": target, "mode": mode or None}
+            "target": target, "mode": modes[0] if modes else None, "augment": "noaug" not in options}
 
 
-def find_runs(dataset, scenario, mode, batch_norm, filtered, runs_dir=RUNS_DIR):
-    """Finished runs of a dataset and scenario with the given settings, by name."""
+def find_runs(dataset, scenario, mode, batch_norm, filtered, training, runs_dir=RUNS_DIR):
+    """Finished runs of a dataset and scenario with the given settings, by name.
+
+    training: the `training` block the runs must have been trained with (mode aside).
+    """
     found = []
     for run_json in sorted(runs_dir.glob("*/run.json")):
         info = json.loads(run_json.read_text(encoding="utf-8"))
@@ -86,6 +97,7 @@ def find_runs(dataset, scenario, mode, batch_norm, filtered, runs_dir=RUNS_DIR):
         if (info["dataset"] == dataset and right_split and info["mode"] == mode
                 and info.get("model", {}).get("batch_norm", "standard") == batch_norm
                 and info["preprocessing"]["filter"] == filtered
+                and same_training(info["training"], training)
                 and "result" in info and (run_json.parent / "best.pt").exists()):
             found.append((run_json.parent, info))
     return found
@@ -219,7 +231,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Results tables of an experiment.")
     parser.add_argument("--name", required=True, help="file name in outputs/results/")
     parser.add_argument("--group", action="append", required=True,
-                        help="LABEL=DATASET:SCENARIO[:TARGET]; repeat for more rows")
+                        help="LABEL=DATASET:SCENARIO[:TARGET][@OPTION[,OPTION]]; repeat for more rows")
     parser.add_argument("--mode", choices=MODES, default=experiment["training"]["mode"])
     parser.add_argument("--batch-norm", choices=BATCH_NORMS,
                         default=experiment.get("model", {}).get("batch_norm", "official"))
@@ -231,16 +243,21 @@ def parse_args():
 
 def main():
     args = parse_args()
+    with open(EXPERIMENT_FILE, encoding="utf-8") as f:
+        training = yaml.safe_load(f)["training"]
     filtered = args.filter == "on"
     groups = []
     for spec in args.group:
         group = parse_group(spec)
         group["mode"] = group["mode"] or args.mode
-        runs = find_runs(group["dataset"], group["scenario"], group["mode"], args.batch_norm, filtered)
+        expected = training if group["augment"] else without_augmentation(training)
+        runs = find_runs(group["dataset"], group["scenario"], group["mode"], args.batch_norm, filtered,
+                         expected)
         if not runs:
             raise SystemExit(f"{group['label']}: no finished {group['mode']} runs of {group['dataset']} "
-                             f"({group['scenario']}, {args.batch_norm} batch norm, filter {args.filter}) "
-                             f"in {RUNS_DIR}; train them first")
+                             f"({group['scenario']}, {args.batch_norm} batch norm, filter {args.filter}, "
+                             f"{'with' if group['augment'] else 'without'} augmentation, other training "
+                             f"settings as in experiment.yaml) in {RUNS_DIR}; train them first")
         print(f"{group['label']}: {len(runs)} runs")
         entries, costs = collect(group, runs, args.force, log=lambda message: print("  " + message))
         group["entries"], group["costs"] = entries, costs
@@ -258,12 +275,12 @@ def main():
     with open(RESULTS_DIR / f"{args.name}.csv", "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         keys = METRICS + COSTS
-        writer.writerow(["label", "dataset", "scenario", "target", "mode", "n"]
+        writer.writerow(["label", "dataset", "scenario", "target", "mode", "augment", "n"]
                         + [f"{k}_{s}" for k in keys for s in ("mean", "std")])
         for g in groups:
             s = g["summary"]
             writer.writerow([g["label"], g["dataset"], g["scenario"], g["target"] or "", g["mode"],
-                             s["macro_f1"]["n"]]
+                             int(g["augment"]), s["macro_f1"]["n"]]
                             + [f"{s[k][stat]:.4f}" for k in keys for stat in ("mean", "std")])
     for suffix, text in zip(("metrics", "f1_stages", "cost"), latex_tables(groups)):
         (RESULTS_DIR / f"{args.name}_{suffix}.tex").write_text(text, encoding="utf-8")

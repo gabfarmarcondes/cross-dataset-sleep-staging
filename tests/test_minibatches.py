@@ -1,4 +1,4 @@
-"""Unit tests for the sequence minibatches (issue 11). Run from the repository root:
+"""Unit tests for the minibatches (issues 11 and 15). Run from the repository root:
 
     python -m pytest tests/
 """
@@ -6,7 +6,7 @@ import numpy as np
 import torch
 
 from src.models.tinysleepnet import TinySleepNet
-from src.training.minibatches import PAD_LABEL, sequence_minibatches
+from src.training.minibatches import PAD_LABEL, epoch_minibatches, sequence_minibatches
 
 
 def fake_recordings(n_epochs, n_samples=4):
@@ -62,3 +62,20 @@ def test_stateful_minibatches_equal_whole_recordings():
         for i, recording in enumerate(recordings):
             whole, _ = model(torch.from_numpy(recording["x"])[None], [len(recording["y"])])
             assert torch.allclose(torch.cat(collected[i]), whole[0], atol=1e-5)
+
+
+def test_epoch_minibatches_equal_indexing_the_concatenation():
+    """Same minibatches as before issue 15, when the epochs of all recordings were
+    concatenated once and indexed with the permutation."""
+    recordings = fake_recordings([45, 20, 3])
+    x_all = np.concatenate([r["x"] for r in recordings])
+    y_all = np.concatenate([r["y"] for r in recordings])
+    order = np.random.default_rng(0).permutation(len(y_all))
+    batches = list(epoch_minibatches(recordings, 32, order))
+    assert [len(b[1]) for b in batches] == [32, 32, 4]
+    for i, (x, y, lengths, reset) in enumerate(batches):
+        idx = order[32 * i:32 * (i + 1)]
+        assert np.array_equal(x, x_all[idx]) and np.array_equal(y, y_all[idx])
+        assert x.dtype == np.float32 and y.dtype == np.int64 and lengths is None and reset is None
+    in_place = list(epoch_minibatches(recordings, 32))  # no order: validation and test
+    assert np.array_equal(np.concatenate([b[0] for b in in_place]), x_all)

@@ -9,11 +9,14 @@ nn.py), with the settings of the `training` block in configs/experiment.yaml:
 - gradients clipped at a global norm of 5.0;
 - cross-entropy weighted by class [1, 1.5, 1, 1, 1] (W, N1, N2, N3, REM), averaged over the
   real epochs of the minibatch (PyTorch's weighted mean divides by the sum of the weights);
+- data augmentation of the training recordings, drawn anew at every training epoch
+  (signal shift; sequence skip in sequence mode; issue 15, src/training/augment.py); the
+  training metrics are therefore measured on the augmented data, as in the official code;
 - after each training epoch, loss, accuracy and macro-F1 on the validation subjects, which
-  come from the source only (D11); the weights with the best validation macro-F1 are kept,
+  come from the source only; the weights with the best validation macro-F1 are kept,
   and training stops after `patience` training epochs without improvement.
 
-Two modes:
+Two modes, both reading the list of recordings (each with x [n, 3000] and y [n]):
     "epoch"     EpochClassifier: CNN + linear head; shuffled minibatches of single epochs
     "sequence"  TinySleepNet: CNN + LSTM; stateful minibatches of 15 recordings x 20 epochs
 """
@@ -27,7 +30,8 @@ from sklearn.metrics import accuracy_score, f1_score
 from torch import nn
 
 from src.models.tinysleepnet import EpochClassifier, TinySleepNet
-from src.training.minibatches import PAD_LABEL, sequence_minibatches
+from src.training.augment import augment
+from src.training.minibatches import PAD_LABEL, epoch_minibatches, sequence_minibatches
 
 MODES = ("epoch", "sequence")
 CSV_COLUMNS = [
@@ -70,39 +74,30 @@ def weighted_loss(logits, y, class_weights):
     return (class_weights[y[real]] * cross_entropy).sum() / real.sum()
 
 
-def prepare(recordings, mode):
-    """Data in the form each mode iterates over.
+def minibatches(recordings, mode, cfg, rng=None):
+    """Yield (x, y, lengths, reset).
 
-    "sequence": the recordings themselves (each with x [n, 3000] and y [n]).
-    "epoch": all epochs of all recordings in two arrays, built once.
+    With rng (training): the recordings are augmented as set in cfg (signal_shift;
+    sequence_skip, in sequence mode only) and their order is shuffled, anew at every call.
+    Without (validation, test): the recordings as they are, in order.
     """
+    if rng is not None:
+        skip = int(cfg["sequence_skip"]) if mode == "sequence" else 0  # cuts sequences: sequence mode only
+        recordings = augment(recordings, rng, float(cfg["signal_shift"]), skip)
     if mode == "sequence":
-        return list(recordings)
-    return {
-        "x": np.concatenate([r["x"] for r in recordings]),
-        "y": np.concatenate([r["y"] for r in recordings]).astype(np.int64),
-    }
+        order = rng.permutation(len(recordings)) if rng is not None else None
+        yield from sequence_minibatches(recordings, cfg["batch_size"], cfg["seq_length"], order)
+    else:
+        n = sum(len(r["y"]) for r in recordings)
+        order = rng.permutation(n) if rng is not None else None
+        yield from epoch_minibatches(recordings, cfg["epoch_batch_size"], order)
 
 
-def minibatches(data, mode, cfg, rng=None):
-    """Yield (x, y, lengths, reset); shuffled when rng is given (training), in order otherwise."""
-    if mode == "sequence":
-        order = rng.permutation(len(data)) if rng is not None else None
-        yield from sequence_minibatches(data, cfg["batch_size"], cfg["seq_length"], order)
-        return
-    n = len(data["y"])
-    order = rng.permutation(n) if rng is not None else np.arange(n)
-    size = cfg["epoch_batch_size"]
-    for start in range(0, n, size):
-        idx = order[start:start + size]
-        yield data["x"][idx], data["y"][idx], None, None
+def run_epoch(model, recordings, mode, cfg, device, optimizer=None, rng=None):
+    """One pass over the recordings.
 
-
-def run_epoch(model, data, mode, cfg, device, optimizer=None, rng=None):
-    """One pass over the data.
-
-    With an optimizer: training (shuffled order, dropout on, weights updated).
-    Without: evaluation (fixed order, dropout off, batch norm with running statistics).
+    With an optimizer: training (augmented data, shuffled order, dropout on, weights updated).
+    Without: evaluation (data as is, fixed order, dropout off, batch norm in inference mode).
     Returns the weighted loss, accuracy and macro-F1 over the real epochs, and the labels.
     """
     training = optimizer is not None
@@ -111,7 +106,7 @@ def run_epoch(model, data, mode, cfg, device, optimizer=None, rng=None):
     loss_sum, n_epochs, trues, preds = 0.0, 0, [], []
     state = None
     with torch.set_grad_enabled(training):
-        for x, y, lengths, reset in minibatches(data, mode, cfg, rng if training else None):
+        for x, y, lengths, reset in minibatches(recordings, mode, cfg, rng if training else None):
             x, y = torch.from_numpy(x).to(device), torch.from_numpy(y).to(device)
             if mode == "sequence":
                 if reset:  # new group of recordings: the LSTM starts from zeros
@@ -147,10 +142,10 @@ def run_epoch(model, data, mode, cfg, device, optimizer=None, rng=None):
 def fit(model, train_data, valid_data, mode, cfg, run_dir, seed, device, log=print):
     """Train with early stopping on validation macro-F1; write history.csv and best.pt.
 
-    Returns the best training epoch and its validation macro-F1; the model ends with the
-    best weights loaded.
+    train_data, valid_data: lists of recordings. Returns the best training epoch and its
+    validation macro-F1; the model ends with the best weights loaded.
     """
-    rng = np.random.default_rng(seed)  # shuffling; weight init and dropout use torch's seed
+    rng = np.random.default_rng(seed)  # augmentation and shuffling; weight init and dropout use torch's seed
     optimizer = make_optimizer(model, cfg)
     best_f1, best_epoch = -1.0, 0
     best_path = run_dir / "best.pt"

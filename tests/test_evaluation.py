@@ -1,8 +1,9 @@
-"""Unit tests for the evaluation module (issue 13). Run from the repository root:
+"""Unit tests for the evaluation module (issues 13 and 15). Run from the repository root:
 
     python -m pytest tests/
 """
 import csv
+import json
 import math
 
 import numpy as np
@@ -13,7 +14,7 @@ from sklearn.metrics import cohen_kappa_score, f1_score
 from src.data.splits import load_splits
 from src.evaluation.evaluate import evaluation_subjects, predict
 from src.evaluation.metrics import compute_metrics, summarize
-from src.evaluation.report import collect, mean_std, parse_group, pt
+from src.evaluation.report import collect, find_runs, mean_std, parse_group, pt
 from src.models.tinysleepnet import EpochClassifier, TinySleepNet
 
 CFG = {"batch_size": 15, "seq_length": 20, "epoch_batch_size": 100}
@@ -56,9 +57,15 @@ def test_groups_are_parsed_and_checked():
     g = parse_group("Sleep-EDF → ISRUC=sleep_edf:cross:isruc")
     assert (g["label"], g["dataset"], g["scenario"], g["target"], g["mode"]) == \
         ("Sleep-EDF → ISRUC", "sleep_edf", "cross", "isruc", None)
+    assert g["augment"]
     assert parse_group("CNN=sleep_edf:in_domain_pooled@epoch")["mode"] == "epoch"
+    g = parse_group("no aug=sleep_edf:in_domain_pooled@sequence,noaug")
+    assert (g["mode"], g["augment"]) == ("sequence", False)
+    g = parse_group("x=sleep_edf:in_domain@noaug")
+    assert (g["mode"], g["augment"]) == (None, False)  # mode from --mode
     for bad in ["x=sleep_edf:cross", "x=sleep_edf:in_domain:isruc", "x=sleep_edf:test", "sleep_edf",
-                "x=sleep_edf:in_domain@lstm"]:
+                "x=sleep_edf:in_domain@lstm", "x=sleep_edf:in_domain@epoch,sequence",
+                "x=sleep_edf:in_domain@sequence,shift"]:
         with pytest.raises(ValueError):
             parse_group(bad)
 
@@ -73,6 +80,28 @@ def test_evaluation_subjects_follow_the_frozen_splits():
     for info, target in [(in_domain, "isruc"), (source, None), (source, "sleep_edf"), (overfit, None)]:
         with pytest.raises(ValueError):
             evaluation_subjects(info, target)
+
+
+def test_report_never_mixes_training_settings(tmp_path):
+    """Same fold and seed with and without augmentation, and a quick test: each group finds
+    only the runs trained with its settings."""
+    training = {"mode": "sequence", "max_epochs": 200, "signal_shift": 0.1, "sequence_skip": 4}
+    variants = {"aug": training, "noaug": {**training, "signal_shift": 0.0, "sequence_skip": 0},
+                "quick": {**training, "max_epochs": 2}}
+    for name, cfg in variants.items():
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "best.pt").touch()
+        info = {"run": name, "dataset": "sleep_edf", "split": {"fold": 0, "source": False},
+                "mode": "sequence", "model": {"batch_norm": "official"},
+                "preprocessing": {"filter": True}, "training": cfg, "result": {}}
+        (tmp_path / name / "run.json").write_text(json.dumps(info), encoding="utf-8")
+
+    def found(expected):
+        runs = find_runs("sleep_edf", "in_domain", "sequence", "official", True, expected, tmp_path)
+        return [info["run"] for _, info in runs]
+
+    assert found(training) == ["aug"]
+    assert found(variants["noaug"]) == ["noaug"]
 
 
 # --- prediction -----------------------------------------------------------------------------

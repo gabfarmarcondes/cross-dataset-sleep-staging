@@ -1,12 +1,12 @@
 model:
-  batch_norm: official    # official: learned scale and shift only, as the official code runs (D27)
+  batch_norm: official    # official: learned scale and shift only, as the official code runs
                           # standard: torch BatchNorm1d (batch statistics in training)
 
 preprocessing:
-  filter: true          # band-pass 0.3-35 Hz on/off (D7)
+  filter: true          # band-pass 0.3-35 Hz; false only for the filter ablation (issue 17)
   band: [0.3, 35.0]
   filter_order: 4
-  clip: 20.0            # robust scaling, clip at +-20 IQR (D8)
+  clip: 20.0            # robust scaling, clip at +-20 IQR
 
 training:
   mode: sequence          # sequence (CNN + LSTM) or epoch (CNN + linear head)
@@ -21,3 +21,7 @@ training:
   batch_size: 15          # sequence mode: recordings in parallel
   seq_length: 20          # sequence mode: epochs per minibatch
   epoch_batch_size: 100   # epoch mode: epochs per minibatch
+  signal_shift: 0.1       # augmentation (#15): shift each training recording by up to +-10% of
+                          # an epoch (+-300 samples), one edge epoch dropped; 0 = off
+  sequence_skip: 4        # augmentation (#15), sequence mode: skip 0-4 epochs at the start of
+                          # each training recording; 0 = off
