@@ -1,14 +1,14 @@
-"""Recordings in the common format, with the load-time preprocessing (D7, D8).
+"""Recordings in the common format, with the load-time preprocessing.
 
 The saved .npz files are never changed: the band-pass filter and the robust
 scaling are applied here, in memory. The same files therefore give both
 conditions of the filtering ablation, switched by `filter` in the config:
 
     preprocessing:
-      filter: true          # band-pass 0.3-35 Hz on/off (D7)
+      filter: true          # band-pass 0.3-35 Hz; false only for the filter ablation (issue 17)
       band: [0.3, 35.0]
       filter_order: 4
-      clip: 20.0            # robust scaling, clip at +-20 IQR (D8)
+      clip: 20.0            # robust scaling, clip at +-20 IQR
 
     recordings = SleepRecordings(paths, **cfg["preprocessing"])
 """

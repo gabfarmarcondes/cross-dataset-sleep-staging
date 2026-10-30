@@ -14,7 +14,7 @@ CNN: one 30-s epoch at 100 Hz, [batch, 1, 3000] -> a feature vector [batch, 2048
     3 x [Conv(128, 8, stride 1) -> BN -> ReLU]
     MaxPool(4, 4) -> Flatten -> Dropout(0.5)
 
-BN is chosen with batch_norm (configs/experiment.yaml, model block; D27):
+BN is chosen with batch_norm (configs/experiment.yaml, model block):
     "official"  what the official layers actually compute: a learned scale and shift per
                 channel, with no batch statistics (default)
     "standard"  torch BatchNorm1d: batch statistics in training, running averages in
@@ -32,10 +32,10 @@ About batch norm: the official nn.batch_norm receives is_training but never pass
 on, so tf.layers.batch_normalization always runs in inference mode, with its running
 mean and variance stuck at their initial values (0 and 1). Each layer is therefore a
 learned scale and shift; this is what ScaleShift computes. Real batch normalization
-("standard") was the first choice here (D24), but in the sequence mode each minibatch
+("standard") was the first choice here, but in the sequence mode each minibatch
 holds consecutive epochs of a few recordings, so its batch statistics differ from the
 running averages used in evaluation: a model that memorized one recording scored 99% in
-training mode and 53-75% in evaluation mode on the same data (D27).
+training mode and 53-75% in evaluation mode on the same data.
 
 Differences from the official code:
 - PyTorch's LSTM has no peephole connections (the official LSTMCell uses them) and keeps

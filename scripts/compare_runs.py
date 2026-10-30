@@ -1,4 +1,4 @@
-"""Compare training runs side by side (D27: official vs. standard batch norm). From the
+"""Compare training runs side by side (official vs. standard batch norm). From the
 repository root:
 
     python scripts/compare_runs.py outputs/runs/sleep_edf_fold0_sequence_seed0 \\
@@ -53,7 +53,7 @@ def summary(history):
 
 
 def title(name, info):
-    batch_norm = info.get("model", {}).get("batch_norm", "standard")  # runs before D27: standard
+    batch_norm = info.get("model", {}).get("batch_norm", "standard")  # older runs: standard
     return BN_NAMES.get(batch_norm, name)
 
 
