@@ -1,6 +1,7 @@
-"""Minibatches of epoch sequences for the stateful LSTM of TinySleepNet (issue 11).
+"""Minibatches for the two training modes (issues 11 and 15).
 
-Same scheme as iterate_batch_multiple_seq_minibatches in the official code
+Sequence mode: sequence_minibatches, minibatches of epoch sequences for the stateful LSTM
+of TinySleepNet. Same scheme as iterate_batch_multiple_seq_minibatches in the official code
 (https://github.com/akaraspt/tinysleepnet, minibatching.py):
 
 - recordings are taken batch_size (15) at a time;
@@ -15,8 +16,11 @@ Same scheme as iterate_batch_multiple_seq_minibatches in the official code
             state = None
         logits, state = model(torch.from_numpy(x), lengths, state)
 
-The random skip of the first epochs (augment_seq in the official code) is data
-augmentation and belongs to issue 15.
+The random skip of the first epochs (augment_seq in the official code) is applied to the
+recordings before they get here (src/training/augment.py).
+
+Epoch mode: epoch_minibatches, minibatches of single epochs taken from the recordings
+(no concatenated copy of the data, so that each recording can be shifted on its own).
 """
 import math
 
@@ -56,3 +60,25 @@ def sequence_minibatches(recordings, batch_size=BATCH_SIZE, seq_length=SEQ_LENGT
                 y[row, :n] = labels
                 lengths[row] = n
             yield x, y, lengths, chunk == 0
+
+
+def epoch_minibatches(recordings, batch_size, order=None):
+    """Yield (x, y, None, None) with single epochs, for the CNN alone.
+
+    The epochs are numbered as if the recordings were concatenated in the given order.
+    order: epoch numbers in the order to use (a permutation for training); None keeps
+    every epoch in place (validation and test).
+
+        x  float32 [<= batch_size, n_samples]
+        y  int64 [<= batch_size]
+    """
+    sizes = [len(r["y"]) for r in recordings]
+    which = np.repeat(np.arange(len(recordings)), sizes)  # recording of each epoch
+    where = np.concatenate([np.arange(n) for n in sizes])  # position in that recording
+    order = np.arange(len(which)) if order is None else np.asarray(order)
+    for start in range(0, len(order), batch_size):
+        idx = order[start:start + batch_size]
+        pairs = list(zip(which[idx], where[idx]))
+        x = np.stack([recordings[r]["x"][e] for r, e in pairs]).astype(np.float32, copy=False)
+        y = np.array([recordings[r]["y"][e] for r, e in pairs], dtype=np.int64)
+        yield x, y, None, None

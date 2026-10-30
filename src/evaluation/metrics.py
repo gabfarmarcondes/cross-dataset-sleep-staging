@@ -1,4 +1,4 @@
-"""Metrics of the evaluation module (issue 13, D13). No model here: only labels in, numbers out.
+"""Metrics of the evaluation module (issue 13). No model here: only labels in, numbers out.
 
     compute_metrics(y_true, y_pred)  one evaluation (one run on its test subjects)
     summarize(values)                mean and standard deviation over runs (folds x seeds)
@@ -23,7 +23,7 @@ def compute_metrics(y_true, y_pred):
     """Accuracy, macro-F1, Cohen's kappa, F1 per stage and the confusion matrix.
 
     macro-F1 averages the F1 of the stages present in y_true or y_pred, as sklearn's default
-    and the official code (D13). The F1 of a stage absent from both is NaN, not 0, so that
+    and the official code. The F1 of a stage absent from both is NaN, not 0, so that
     it is skipped (not counted as an error) when runs are averaged.
     confusion[i][j]: epochs of true stage i predicted as stage j.
     """

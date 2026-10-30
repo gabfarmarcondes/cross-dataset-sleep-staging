@@ -1,4 +1,4 @@
-"""Unit tests for the experiment runner (issue 14). Run from the repository root:
+"""Unit tests for the experiment runner (issues 14 and 15). Run from the repository root:
 
     python -m pytest tests/
 """
@@ -6,10 +6,12 @@ import json
 
 from src.training.run_many import planned_runs, status
 
+TRAINING = {"mode": "sequence", "max_epochs": 200, "signal_shift": 0.1, "sequence_skip": 4}
+
 
 def test_experiment_a_plan_is_seed_by_seed():
     runs = planned_runs("sleep_edf", "in_domain", ["epoch", "sequence"], [0, 1, 2],
-                        [0, 1, 2, 3, 4], True, "official")
+                        [0, 1, 2, 3, 4], True, "official", TRAINING)
     names = [name for name, _ in runs]
     assert len(names) == len(set(names)) == 2 * 5 * 3
     assert names[0] == "sleep_edf_fold0_epoch_seed0" and names[9] == "sleep_edf_fold4_sequence_seed0"
@@ -19,10 +21,18 @@ def test_experiment_a_plan_is_seed_by_seed():
 
 
 def test_source_plan_and_non_default_names():
-    runs = planned_runs("hmc", "source", ["sequence"], [0, 1], [0, 1, 2, 3, 4], False, "standard")
+    runs = planned_runs("hmc", "source", ["sequence"], [0, 1], [0, 1, 2, 3, 4], False, "standard", TRAINING)
     assert [name for name, _ in runs] == ["hmc_source_sequence_seed0_nofilter_bnstandard",
                                           "hmc_source_sequence_seed1_nofilter_bnstandard"]
-    assert "--source" in runs[0][1]
+    assert "--source" in runs[0][1] and "--no-augment" not in runs[0][1]
+
+
+def test_runs_without_augmentation_have_their_own_names():
+    runs = planned_runs("sleep_edf", "in_domain", ["epoch", "sequence"], [0], [0], True, "official",
+                        TRAINING, no_augment=True)
+    assert [name for name, _ in runs] == ["sleep_edf_fold0_epoch_seed0_noaug",
+                                          "sleep_edf_fold0_sequence_seed0_noaug"]
+    assert all(args[-1] == "--no-augment" for _, args in runs)
 
 
 def test_status_of_finished_interrupted_and_new_runs(tmp_path):
@@ -35,7 +45,10 @@ def test_status_of_finished_interrupted_and_new_runs(tmp_path):
     write("done", result={}, training={"mode": "epoch", "max_epochs": 200}, preprocessing={"filter": True})
     write("quick", result={}, training={"mode": "sequence", "max_epochs": 2}, preprocessing={"filter": True})
     write("half", run="half")
+    write("noaug", result={}, training={"mode": "sequence", "max_epochs": 200, "signal_shift": 0.0},
+          preprocessing={"filter": True})
     assert status("done", expected, tmp_path) == "done"  # the mode may differ: it is part of the name
     assert status("quick", expected, tmp_path) == "different settings"
+    assert status("noaug", expected, tmp_path) == "different settings"  # augmentation is a setting
     assert status("half", expected, tmp_path) == "interrupted"
     assert status("never", expected, tmp_path) == "new"

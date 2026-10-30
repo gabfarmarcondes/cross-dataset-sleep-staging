@@ -164,7 +164,7 @@ def test_sequence_parameter_count():
     assert count_parameters(model.lstm) == 4 * 128 * (2048 + 128) + 2 * 4 * 128 == 1_115_136
     assert count_parameters(model) == 400_640 + 1_115_136 + (128 * 5 + 5) == 1_516_293 + 128
 
-# --- batch norm: official scale and shift vs. standard (D27) --------------------------------
+# --- batch norm: official scale and shift vs. standard --------------------------------------
 
 def test_official_batch_norm_is_a_scale_and_shift():
     """gamma * x / sqrt(1 + eps) + beta, with no running statistics to update."""
@@ -193,7 +193,7 @@ def test_default_cnn_uses_the_official_batch_norm():
 @pytest.mark.parametrize("batch_norm, independent", [("official", True), ("standard", False)])
 def test_an_epoch_does_not_depend_on_its_batch(epochs, batch_norm, independent):
     """With the official layer, an epoch gives the same features alone or with others,
-    in training mode and in evaluation mode. Standard batch norm does not (D27)."""
+    in training mode and in evaluation mode. Standard batch norm does not."""
     cnn = TinySleepNetCNN(dropout=0.0, batch_norm=batch_norm).train()
     with torch.no_grad():
         in_batch = cnn(epochs)[:1]

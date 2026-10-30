@@ -1,4 +1,4 @@
-"""Unit tests for the training loop (issue 12). Run from the repository root:
+"""Unit tests for the training loop (issues 12 and 15). Run from the repository root:
 
     python -m pytest tests/
 """
@@ -12,7 +12,7 @@ import torch.nn.functional as F
 
 from src.data.splits import SPLITS_DIR
 from src.training import loop
-from src.training.loop import conv_l2, fit, make_model, make_optimizer, prepare, run_epoch, weighted_loss
+from src.training.loop import conv_l2, fit, make_model, make_optimizer, run_epoch, weighted_loss
 from src.training.minibatches import PAD_LABEL
 from src.training.train import run_name, select_subjects
 
@@ -21,7 +21,7 @@ CFG = {  # experiment.yaml values, except smaller batches for the toy data
     "max_epochs": 200, "patience": 50, "learning_rate": 1.0e-4, "betas": [0.9, 0.999],
     "adam_eps": 1.0e-8, "l2_weight_decay": 1.0e-3, "clip_grad_norm": 5.0,
     "class_weights": [1.0, 1.5, 1.0, 1.0, 1.0], "batch_size": 4, "seq_length": 20,
-    "epoch_batch_size": 32,
+    "epoch_batch_size": 32, "signal_shift": 0.1, "sequence_skip": 4,
 }
 
 
@@ -88,12 +88,12 @@ def test_training_never_sees_test_subjects(path):
 
 # --- training and evaluation ----------------------------------------------------------------
 
-# epochs of training needed to pass 90% with seeds 0-2: 3-4 (epoch), 14-21 (sequence)
+# epochs of training needed to pass 90% with seeds 0-2, augmentation on: 3-6 (epoch), 16-22 (sequence)
 @pytest.mark.parametrize("mode, n_epochs", [("epoch", 15), ("sequence", 30)])
 def test_training_learns_a_toy_task(mode, n_epochs):
     torch.manual_seed(0)
     model = make_model(mode)
-    data = prepare(toy_recordings(4, 50), mode)
+    data = toy_recordings(4, 50)
     optimizer = make_optimizer(model, CFG)
     rng = np.random.default_rng(0)
     first = run_epoch(model, data, mode, CFG, "cpu", optimizer, rng)
@@ -108,7 +108,7 @@ def test_evaluation_changes_nothing():
     """No weight update and no batch-norm statistics update outside training."""
     model = make_model("sequence", "standard")  # the option that has running statistics
     before = {k: v.clone() for k, v in model.state_dict().items()}
-    run_epoch(model, prepare(toy_recordings(2, 30), "sequence"), "sequence", CFG, "cpu")
+    run_epoch(model, toy_recordings(2, 30), "sequence", CFG, "cpu")
     assert all(torch.equal(before[k], v) for k, v in model.state_dict().items())
 
 
@@ -134,7 +134,10 @@ def test_fit_stops_early_and_restores_the_best(tmp_path, monkeypatch):
     assert [r["best"] for r in rows] == ["1", "1", "0", "0", "0"]
     assert torch.allclose(model.head.bias, torch.full((5,), 0.60))  # best weights loaded back
 
+
 def test_run_name_marks_non_default_settings():
     assert run_name("sleep_edf", "sequence", 0, fold=0) == "sleep_edf_fold0_sequence_seed0"
     assert run_name("hmc", "epoch", 2, source=True, filtered=False, batch_norm="standard") == \
         "hmc_source_epoch_seed2_nofilter_bnstandard"
+    assert run_name("sleep_edf", "sequence", 1, fold=3, augmented=False) == \
+        "sleep_edf_fold3_sequence_seed1_noaug"

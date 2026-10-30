@@ -6,8 +6,8 @@
 Which subjects are tested comes from the run itself (run.json) and the frozen splits:
     in-domain run (trained with --fold i)   folds[i].test of the same dataset
     source run (trained with --source)      target.test of the --target dataset
-target.adapt is never used here, and the test labels are only used to compute the metrics
-(D11). The model is the best checkpoint (best.pt), in evaluation mode, with the same
+target.adapt is never used here, and the test labels are only used to compute the metrics.
+The model is the best checkpoint (best.pt), in evaluation mode, with the same
 preprocessing as in training.
 
 Writes next to the run (with _<target> in the name for cross-dataset evaluations):
@@ -25,7 +25,7 @@ import torch
 
 from src.data.splits import load_splits
 from src.evaluation.metrics import compute_metrics
-from src.training.loop import make_model, minibatches, prepare
+from src.training.loop import make_model, minibatches
 from src.training.train import load_recordings
 
 DATASETS = ["sleep_edf", "isruc", "hmc"]
@@ -52,7 +52,7 @@ def file_suffix(target):
 
 
 def load_model(run_dir, info, device):
-    batch_norm = info.get("model", {}).get("batch_norm", "standard")  # runs before D27: standard
+    batch_norm = info.get("model", {}).get("batch_norm", "standard")  # older runs: standard
     model = make_model(info["mode"], batch_norm).to(device)
     model.load_state_dict(torch.load(Path(run_dir) / "best.pt", map_location=device))
     return model.eval()
@@ -65,11 +65,10 @@ def predict(model, recording, mode, cfg, device):
     minibatch to the next, as in training.
     """
     model.eval()
-    data = prepare([recording], mode)
     cfg = {**cfg, "batch_size": 1}  # one recording: no empty rows
     preds, state = [], None
     with torch.no_grad():
-        for x, _, lengths, reset in minibatches(data, mode, cfg):
+        for x, _, lengths, reset in minibatches([recording], mode, cfg):  # no rng: never augmented
             x = torch.from_numpy(x).to(device)
             if mode == "sequence":
                 if reset:
