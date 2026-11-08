@@ -16,20 +16,26 @@ A group is LABEL=DATASET:SCENARIO[:TARGET][@OPTION[,OPTION]]:
                       target is DATASET; one value per seed
     cross:TARGET      runs of DATASET trained with --source, tested on TARGET's target.test
                       subjects; one value per run (seed)
-Options after @: a mode (epoch or sequence) overrides --mode for that group, and noaug
-takes the runs trained with --no-augment instead (issue 15). So CNN-only and CNN + LSTM, or
-with and without data augmentation, can be rows of the same table:
+Options after @: a mode (epoch or sequence) overrides --mode for that group, noaug
+takes the runs trained with --no-augment instead (issue 15), and nofilter the runs trained
+with --no-filter (issue 17). So CNN-only and CNN + LSTM, with and without data augmentation,
+or with and without the band-pass filter, can be rows of the same table:
 
     python -m src.evaluation.report --name experiment_a \
         --group "CNN=sleep_edf:in_domain_pooled@epoch" \
         --group "CNN + LSTM=sleep_edf:in_domain_pooled@sequence" \
         --group "CNN + LSTM, no augmentation=sleep_edf:in_domain_pooled@sequence,noaug"
 
+    python -m src.evaluation.report --name experiment_c \
+        --group "Filtered=sleep_edf:in_domain" \
+        --group "Unfiltered=sleep_edf:in_domain@nofilter"
+
 Only runs with the chosen mode, batch norm and filter setting (--mode, --batch-norm,
---filter; defaults from configs/experiment.yaml) and with the `training` block of
-experiment.yaml (augmentation off for noaug groups) are used: a quick test with
---max-epochs never enters a table. Runs not yet evaluated are evaluated first
-(src/evaluation/evaluate.py). The tables show mean ± standard deviation over the values.
+--filter; defaults from configs/experiment.yaml; nofilter groups: filter off) and with the
+`training` block of experiment.yaml (augmentation off for noaug groups) are used: a quick
+test with --max-epochs never enters a table. Runs not yet evaluated are evaluated first
+(src/evaluation/evaluate.py). The tables show mean ± standard deviation over the values;
+src/evaluation/paired.py compares two groups run by run (same fold and seed).
 
 Writes in outputs/results/:
     <name>.json            every value of every run, summaries and summed confusion matrices
@@ -59,6 +65,7 @@ from src.training.train import EXPERIMENT_FILE, RUNS_DIR, same_training
 
 RESULTS_DIR = ROOT / "outputs" / "results"
 SCENARIOS = ("in_domain", "in_domain_pooled", "in_domain_ref", "cross")
+SETTINGS = ("noaug", "nofilter")  # group options besides a mode
 METRICS = ["accuracy", "macro_f1", "kappa"] + [f"f1_{s}" for s in STAGES]
 COSTS = ["parameters", "seconds_per_training_epoch", "epochs_run", "inference_seconds_per_recording"]
 
@@ -66,22 +73,24 @@ COSTS = ["parameters", "seconds_per_training_epoch", "epochs_run", "inference_se
 # ----------------------------------------------------------------------------- groups and runs
 
 def parse_group(spec):
-    """'LABEL=DATASET:SCENARIO[:TARGET][@OPTION[,OPTION]]' -> dict (mode None: use --mode)."""
+    """'LABEL=DATASET:SCENARIO[:TARGET][@OPTION[,OPTION]]' -> dict (mode None: use --mode;
+    filter None: use --filter)."""
     label, sep, rest = spec.partition("=")
     rest, _, options = rest.partition("@")
     options = [o.strip() for o in options.split(",")] if options else []
     modes = [o for o in options if o in MODES]
     parts = rest.split(":")
     if (not sep or len(parts) not in (2, 3) or parts[1] not in SCENARIOS or len(modes) > 1
-            or any(o not in MODES and o != "noaug" for o in options)):
+            or any(o not in MODES and o not in SETTINGS for o in options)):
         raise ValueError(f"group {spec!r}: expected LABEL=DATASET:SCENARIO[:TARGET][@OPTION[,OPTION]], "
-                         f"SCENARIO in {SCENARIOS}, OPTION a mode in {MODES} or noaug")
+                         f"SCENARIO in {SCENARIOS}, OPTION a mode in {MODES} or one of {SETTINGS}")
     dataset, scenario = parts[0], parts[1]
     target = parts[2] if len(parts) == 3 else None
     if (scenario == "cross") != (target is not None):
         raise ValueError(f"group {spec!r}: a target goes with the cross scenario, and only with it")
     return {"label": label.strip(), "spec": spec, "dataset": dataset, "scenario": scenario,
-            "target": target, "mode": modes[0] if modes else None, "augment": "noaug" not in options}
+            "target": target, "mode": modes[0] if modes else None, "augment": "noaug" not in options,
+            "filter": False if "nofilter" in options else None}
 
 
 def find_runs(dataset, scenario, mode, batch_norm, filtered, training, runs_dir=RUNS_DIR):
@@ -236,7 +245,8 @@ def parse_args():
     parser.add_argument("--batch-norm", choices=BATCH_NORMS,
                         default=experiment.get("model", {}).get("batch_norm", "official"))
     parser.add_argument("--filter", choices=["on", "off"],
-                        default="on" if experiment["preprocessing"]["filter"] else "off")
+                        default="on" if experiment["preprocessing"]["filter"] else "off",
+                        help="filter setting of the groups without the nofilter option")
     parser.add_argument("--force", action="store_true", help="evaluate again even if already evaluated")
     return parser.parse_args()
 
@@ -245,17 +255,19 @@ def main():
     args = parse_args()
     with open(EXPERIMENT_FILE, encoding="utf-8") as f:
         training = yaml.safe_load(f)["training"]
-    filtered = args.filter == "on"
     groups = []
     for spec in args.group:
         group = parse_group(spec)
         group["mode"] = group["mode"] or args.mode
+        if group["filter"] is None:
+            group["filter"] = args.filter == "on"
         expected = training if group["augment"] else without_augmentation(training)
-        runs = find_runs(group["dataset"], group["scenario"], group["mode"], args.batch_norm, filtered,
-                         expected)
+        runs = find_runs(group["dataset"], group["scenario"], group["mode"], args.batch_norm,
+                         group["filter"], expected)
         if not runs:
             raise SystemExit(f"{group['label']}: no finished {group['mode']} runs of {group['dataset']} "
-                             f"({group['scenario']}, {args.batch_norm} batch norm, filter {args.filter}, "
+                             f"({group['scenario']}, {args.batch_norm} batch norm, "
+                             f"filter {'on' if group['filter'] else 'off'}, "
                              f"{'with' if group['augment'] else 'without'} augmentation, other training "
                              f"settings as in experiment.yaml) in {RUNS_DIR}; train them first")
         print(f"{group['label']}: {len(runs)} runs")
@@ -275,12 +287,12 @@ def main():
     with open(RESULTS_DIR / f"{args.name}.csv", "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
         keys = METRICS + COSTS
-        writer.writerow(["label", "dataset", "scenario", "target", "mode", "augment", "n"]
+        writer.writerow(["label", "dataset", "scenario", "target", "mode", "augment", "filter", "n"]
                         + [f"{k}_{s}" for k in keys for s in ("mean", "std")])
         for g in groups:
             s = g["summary"]
             writer.writerow([g["label"], g["dataset"], g["scenario"], g["target"] or "", g["mode"],
-                             int(g["augment"]), s["macro_f1"]["n"]]
+                             int(g["augment"]), int(g["filter"]), s["macro_f1"]["n"]]
                             + [f"{s[k][stat]:.4f}" for k in keys for stat in ("mean", "std")])
     for suffix, text in zip(("metrics", "f1_stages", "cost"), latex_tables(groups)):
         (RESULTS_DIR / f"{args.name}_{suffix}.tex").write_text(text, encoding="utf-8")

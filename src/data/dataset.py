@@ -2,10 +2,11 @@
 
 The saved .npz files are never changed: the band-pass filter and the robust
 scaling are applied here, in memory. The same files therefore give both
-conditions of the filtering ablation, switched by `filter` in the config:
+conditions of the filtering ablation, switched by `filter` in the config
+(or by --no-filter in src.training.train and src.training.run_many, issue 17):
 
     preprocessing:
-      filter: true          # band-pass 0.3-35 Hz; false only for the filter ablation (issue 17)
+      filter: true          # band-pass 0.3-35 Hz; the filter ablation (issue 17) uses --no-filter
       band: [0.3, 35.0]
       filter_order: 4
       clip: 20.0            # robust scaling, clip at +-20 IQR
@@ -21,6 +22,11 @@ from src.data.preprocess import filter_epochs, robust_scale
 from src.read_data import ROOT, load_config
 
 META_KEYS = ("dataset", "recording_id", "subject_id", "channel")
+
+
+def without_filter(preprocessing):
+    """The preprocessing settings with the band-pass filter turned off (--no-filter)."""
+    return {**preprocessing, "filter": False}
 
 
 def recording_paths(dataset):

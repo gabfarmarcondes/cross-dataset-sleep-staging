@@ -1,4 +1,4 @@
-"""Unit tests for the evaluation module (issues 13 and 15). Run from the repository root:
+"""Unit tests for the evaluation module (issues 13, 15 and 17). Run from the repository root:
 
     python -m pytest tests/
 """
@@ -62,10 +62,12 @@ def test_groups_are_parsed_and_checked():
     g = parse_group("no aug=sleep_edf:in_domain_pooled@sequence,noaug")
     assert (g["mode"], g["augment"]) == ("sequence", False)
     g = parse_group("x=sleep_edf:in_domain@noaug")
-    assert (g["mode"], g["augment"]) == (None, False)  # mode from --mode
+    assert (g["mode"], g["augment"], g["filter"]) == (None, False, None)  # mode and filter from the CLI
+    g = parse_group("unfiltered=sleep_edf:cross:hmc@nofilter")
+    assert (g["mode"], g["augment"], g["filter"]) == (None, True, False)
     for bad in ["x=sleep_edf:cross", "x=sleep_edf:in_domain:isruc", "x=sleep_edf:test", "sleep_edf",
                 "x=sleep_edf:in_domain@lstm", "x=sleep_edf:in_domain@epoch,sequence",
-                "x=sleep_edf:in_domain@sequence,shift"]:
+                "x=sleep_edf:in_domain@sequence,shift", "x=sleep_edf:in_domain@filter"]:
         with pytest.raises(ValueError):
             parse_group(bad)
 
@@ -102,6 +104,21 @@ def test_report_never_mixes_training_settings(tmp_path):
 
     assert found(training) == ["aug"]
     assert found(variants["noaug"]) == ["noaug"]
+
+
+def test_report_never_mixes_filter_settings(tmp_path):
+    """Same fold and seed with and without the band-pass filter (issue 17)."""
+    training = {"mode": "sequence", "max_epochs": 200}
+    for name, filtered in [("filtered", True), ("unfiltered", False)]:
+        (tmp_path / name).mkdir()
+        (tmp_path / name / "best.pt").touch()
+        info = {"run": name, "dataset": "sleep_edf", "split": {"fold": 0, "source": False},
+                "mode": "sequence", "model": {"batch_norm": "official"},
+                "preprocessing": {"filter": filtered}, "training": training, "result": {}}
+        (tmp_path / name / "run.json").write_text(json.dumps(info), encoding="utf-8")
+    for filtered, expected in [(True, ["filtered"]), (False, ["unfiltered"])]:
+        runs = find_runs("sleep_edf", "in_domain", "sequence", "official", filtered, training, tmp_path)
+        assert [info["run"] for _, info in runs] == expected
 
 
 # --- prediction -----------------------------------------------------------------------------

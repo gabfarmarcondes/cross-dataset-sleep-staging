@@ -3,7 +3,7 @@ model:
                           # standard: torch BatchNorm1d (batch statistics in training)
 
 preprocessing:
-  filter: true          # band-pass 0.3-35 Hz; false only for the filter ablation (issue 17)
+  filter: true          # band-pass 0.3-35 Hz; the filter ablation (issue 17) uses --no-filter
   band: [0.3, 35.0]
   filter_order: 4
   clip: 20.0            # robust scaling, clip at +-20 IQR

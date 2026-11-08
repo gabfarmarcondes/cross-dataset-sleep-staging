@@ -5,6 +5,7 @@
     python -m src.training.train --dataset sleep_edf --subjects 0 1 --mode epoch   # overfit check
     python -m src.training.train --dataset sleep_edf --fold 0 --batch-norm standard  # batch-norm comparison
     python -m src.training.train --dataset sleep_edf --fold 0 --no-augment   # issue 15 comparison
+    python -m src.training.train --dataset sleep_edf --fold 0 --no-filter    # issue 17 comparison
 
 Training and validation subjects come from the frozen splits (configs/splits). The test
 subjects (in_domain folds[i].test, cross_dataset target) are never loaded here, so model
@@ -14,7 +15,10 @@ an experiment.
 
 Settings: the `model`, `training` and `preprocessing` blocks of configs/experiment.yaml;
 the training data are augmented as set there (signal_shift, sequence_skip; issue 15),
-unless --no-augment is given. Output, in outputs/runs/<run name>/:
+unless --no-augment is given, and band-pass filtered as set there (filter), unless
+--no-filter is given (issue 17; the run name then ends in _nofilter, and the evaluation of
+the run loads its test recordings without the filter too). Output, in
+outputs/runs/<run name>/:
     history.csv   one row per training epoch: loss, accuracy, macro-F1 (train and validation)
     best.pt       weights with the best validation macro-F1
     run.json      settings, subjects, recordings and result of the run
@@ -28,7 +32,7 @@ from datetime import datetime
 import torch
 import yaml
 
-from src.data.dataset import SleepRecordings
+from src.data.dataset import SleepRecordings, without_filter
 from src.data.splits import load_splits, recordings_of
 from src.models.tinysleepnet import BATCH_NORMS, count_parameters
 from src.read_data import ROOT, processed_path
@@ -98,6 +102,8 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--no-augment", action="store_true",
                         help="train without data augmentation (signal_shift and sequence_skip at 0)")
+    parser.add_argument("--no-filter", action="store_true",
+                        help="load the recordings without the band-pass filter (filter ablation)")
     parser.add_argument("--max-epochs", type=int, default=None, help="override experiment.yaml")
     parser.add_argument("--overwrite", action="store_true", help="replace an existing run")
     return parser.parse_args()
@@ -112,6 +118,8 @@ def main():
         cfg["max_epochs"] = args.max_epochs
     if args.no_augment:
         cfg = without_augmentation(cfg)
+    if args.no_filter:
+        preprocessing = without_filter(preprocessing)  # run.json records the filter actually used
     mode = args.mode or cfg["mode"]
     cfg["mode"] = mode  # run.json records the mode actually used
     model_cfg = experiment.get("model", {})
@@ -164,8 +172,10 @@ def main():
     augmentation = (f"shift up to {cfg['signal_shift']:.0%} of an epoch"
                     + (f", skip 0-{cfg['sequence_skip']} epochs" if mode == "sequence" else "")
                     if augmented else "no augmentation")
+    low, high = preprocessing["band"]
+    filtering = f"band-pass {low:g}-{high:g} Hz" if preprocessing["filter"] else "no band-pass filter"
     log.info(f"run {name} on {device}: {mode} mode, {batch_norm} batch norm, "
-             f"{info['parameters']:,} parameters, {augmentation}")
+             f"{info['parameters']:,} parameters, {augmentation}, {filtering}")
     log.info(f"train subjects {train_subjects} ({len(train_recordings)} recordings, {n_train} epochs)")
     log.info(f"valid subjects {valid_subjects} ({len(valid_recordings)} recordings, {n_valid} epochs)")
 
