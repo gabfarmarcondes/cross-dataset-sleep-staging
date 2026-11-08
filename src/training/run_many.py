@@ -5,6 +5,7 @@
         --modes epoch sequence --seeds 0 1 2            # experiment A: 2 x 5 folds x 3 seeds
     python -m src.training.run_many --dataset sleep_edf --scenario source --seeds 0 1 2
     python -m src.training.run_many ... --no-augment    # the same runs without data augmentation
+    python -m src.training.run_many ... --no-filter     # the same runs without the band-pass filter
     python -m src.training.run_many ... --dry-run       # only list what would run
 
 Each run is one call to src.training.train in a fresh process (memory is freed between
@@ -24,6 +25,7 @@ import time
 
 import yaml
 
+from src.data.dataset import without_filter
 from src.models.tinysleepnet import BATCH_NORMS
 from src.training.augment import is_augmented, without_augmentation
 from src.training.loop import MODES
@@ -35,9 +37,15 @@ def effective_training(training, no_augment):
     return without_augmentation(training) if no_augment else training
 
 
+def effective_preprocessing(preprocessing, no_filter):
+    """The preprocessing block the runs will record in run.json (as src.training.train sets it)."""
+    return without_filter(preprocessing) if no_filter else preprocessing
+
+
 def planned_runs(dataset, scenario, modes, seeds, folds, filtered, batch_norm, training,
                  no_augment=False):
-    """(name, arguments) of every run, seed by seed. training: the experiment.yaml block."""
+    """(name, arguments) of every run, seed by seed. training: the experiment.yaml block;
+    filtered: whether the runs use the band-pass filter (False adds --no-filter)."""
     training = effective_training(training, no_augment)
     runs = []
     for seed in seeds:
@@ -50,6 +58,7 @@ def planned_runs(dataset, scenario, modes, seeds, folds, filtered, batch_norm, t
                         "--batch-norm", batch_norm]
                 args += ["--fold", str(fold)] if fold is not None else ["--source"]
                 args += ["--no-augment"] if no_augment else []
+                args += [] if filtered else ["--no-filter"]
                 runs.append((name, args))
     return runs
 
@@ -81,14 +90,16 @@ def main():
     parser.add_argument("--batch-norm", choices=BATCH_NORMS,
                         default=experiment.get("model", {}).get("batch_norm", "official"))
     parser.add_argument("--no-augment", action="store_true", help="train without data augmentation")
+    parser.add_argument("--no-filter", action="store_true", help="train without the band-pass filter")
     parser.add_argument("--dry-run", action="store_true", help="only list the runs and their status")
     args = parser.parse_args()
 
+    preprocessing = effective_preprocessing(experiment["preprocessing"], args.no_filter)
     runs = planned_runs(args.dataset, args.scenario, args.modes, args.seeds, args.folds,
-                        experiment["preprocessing"]["filter"], args.batch_norm,
+                        preprocessing["filter"], args.batch_norm,
                         experiment["training"], args.no_augment)
     expected = {"training": effective_training(experiment["training"], args.no_augment),
-                "preprocessing": experiment["preprocessing"]}
+                "preprocessing": preprocessing}
     states = {name: status(name, expected) for name, _ in runs}
     todo = [(name, a) for name, a in runs if states[name] != "done"]
     print(f"{len(runs)} runs: {len(runs) - len(todo)} done, {len(todo)} to train")
