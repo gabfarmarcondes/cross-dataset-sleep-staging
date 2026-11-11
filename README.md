@@ -197,6 +197,8 @@ This regenerates every table and figure of the Experiments chapter: it runs `src
 
 Code is released under the MIT License. Datasets are **not** covered by this license and remain subject to the terms of their respective providers.
 
+The model in [`src/models/tinysleepnet.py`](src/models/tinysleepnet.py) is a reimplementation based on the official TinySleepNet code ([akaraspt/tinysleepnet](https://github.com/akaraspt/tinysleepnet), Apache License 2.0), whose README restricts use to academic and non-commercial purposes. Please also follow those terms when reusing it, and cite Supratak and Guo (2020).
+
 ## Author
 
 Gabriel Farias Marcondes — Computer Science, UTFPR Campo Mourão
