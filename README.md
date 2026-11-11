@@ -91,6 +91,44 @@ Then set `data_root` to the folder that contains each dataset's top folder (e.g.
 python scripts/check_datasets.py
 ```
 
+## Results (TCC 1)
+
+Results of the first stage of the thesis, without domain adaptation. Every value is the mean ± standard deviation over 3 seeds, in %, unless noted. Within a dataset, the predictions of the 5 folds are pooled before computing the metrics, as in the TinySleepNet paper. Cross-dataset, the source model is trained on 18 subjects of one dataset and tested on the 10 test subjects of another. The files behind each table are listed in [Reproducing the thesis results](#reproducing-the-thesis-results).
+
+### Experiment A: TinySleepNet within Sleep-EDF-20
+
+| Model | Accuracy | Macro-F1 | Cohen's κ |
+|---|---|---|---|
+| CNN | 80.9 | 74.0 ± 0.4 | 0.738 |
+| CNN + LSTM | 83.8 | 78.4 ± 0.7 | 0.777 |
+| CNN + LSTM, no data augmentation | 83.5 | 78.2 ± 0.5 | 0.774 |
+| TinySleepNet (paper) | 85.4 | 80.5 | 0.80 |
+
+The reimplementation is 2.1 points of macro-F1 below the paper, within the acceptance criterion set before the runs (5 points). Run by run (same fold and seed), the LSTM is better in 14 of 15 runs (+4.3 points on average); data augmentation is better in 7 and worse in 8 (+0.4).
+
+### Experiment B: cross-dataset, without adaptation (macro-F1)
+
+| Train → test | Within the test dataset (reference) | Cross-dataset | Difference |
+|---|---|---|---|
+| Sleep-EDF → ISRUC | 68.7 ± 2.2 | 62.8 ± 0.8 | −5.9 |
+| Sleep-EDF → HMC | 69.8 ± 6.9 | 61.9 ± 1.3 | −7.9 |
+| ISRUC → Sleep-EDF | 77.9 ± 0.5 | 64.0 ± 1.2 | −13.9 |
+| HMC → Sleep-EDF | 77.9 ± 0.5 | 59.5 ± 1.8 | −18.4 |
+| ISRUC → HMC | 69.8 ± 6.9 | 73.7 ± 0.1 | +3.9 |
+| HMC → ISRUC | 68.7 ± 2.2 | 69.0 ± 2.4 | +0.3 |
+
+Every pair with Sleep-EDF (Fpz-Cz) loses performance, while ISRUC and HMC (both C3) transfer to each other without loss, as hypothesized before training. One run of the HMC reference (fold 2, seed 0) stopped early; without it, that reference is 73.8%.
+
+### Experiment C: band-pass filter ablation (macro-F1)
+
+| Scenario | Filtered (0.3–35 Hz) | Unfiltered | Difference |
+|---|---|---|---|
+| Sleep-EDF, within | 78.4 ± 0.7 | 77.8 ± 0.2 | +0.6 |
+| Sleep-EDF → ISRUC | 62.8 ± 0.8 | 58.9 ± 4.2 | +3.9 ± 4.9 |
+| Sleep-EDF → HMC | 61.9 ± 1.3 | 53.4 ± 6.2 | +8.5 ± 6.3 |
+
+Within Sleep-EDF the filter barely matters (run by run: +0.7 ± 2.8 points, better in 8 of 15 runs). Across datasets it helps and makes the results more stable across seeds, most of all when the target is HMC, the dataset with the most power below 0.3 Hz. The largest loss without the filter is in N3 on HMC (F1 from 63.1% to 38.9%).
+
 ## Reproducing the thesis results
 
 All commands run from the repository root, inside the virtual environment, with `configs/paths.yaml` set (see [Data setup](#data-setup)). Trained models, evaluations, tables and figures are written to `outputs/`, which is not versioned.
